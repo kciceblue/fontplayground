@@ -5,8 +5,8 @@ import html
 
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QFont, QFontDatabase, QTextOption
-from PySide6.QtWidgets import (QHBoxLayout, QLabel, QPlainTextEdit, QSlider, QSpinBox, QTextBrowser, QVBoxLayout,
-                               QWidget)
+from PySide6.QtWidgets import (QHBoxLayout, QLabel, QPlainTextEdit, QScrollArea, QSlider, QSpinBox, QTextBrowser,
+                               QVBoxLayout, QWidget)
 
 from fontplayground.catalog.face import FontFace
 
@@ -83,6 +83,16 @@ class PreviewWidget(QWidget):
         for w in (self.weight_label, self.weight_slider, self.weight_value):
             w.hide()
 
+        # The size rows live in a scroll area so large sizes never get clipped.
+        self.scroll = QScrollArea()
+        self.scroll.setWidgetResizable(True)
+        self.scroll.setFrameShape(QScrollArea.Shape.NoFrame)
+        rows_host = QWidget()
+        rows_layout = QVBoxLayout(rows_host)
+        rows_layout.setContentsMargins(0, 0, 0, 0)
+        self.scroll.setWidget(rows_host)
+        layout.addWidget(self.scroll, 1)
+
         self.size_spins: list[QSpinBox] = []
         self.browsers: list[QTextBrowser] = []
         for size in sizes:
@@ -96,12 +106,13 @@ class PreviewWidget(QWidget):
             browser.setOpenLinks(False)
             browser.setFrameShape(QTextBrowser.Shape.NoFrame)
             browser.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+            browser.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
             row.addWidget(spin, 0, Qt.AlignmentFlag.AlignTop)
             row.addWidget(browser, 1)
-            layout.addLayout(row)
+            rows_layout.addLayout(row)
             self.size_spins.append(spin)
             self.browsers.append(browser)
-        layout.addStretch(1)
+        rows_layout.addStretch(1)
         self._render()
 
     # ----- public API -----

@@ -69,7 +69,8 @@ def set_style_bits(font: TTFont, style: str) -> None:
         sel |= 1 << 5
     if not bold and not italic:
         sel |= 1 << 6
-    os2.fsSelection = sel | (1 << 7)  # USE_TYPO_METRICS
+    os2.version = max(int(os2.version), 4)  # bit 7 (USE_TYPO_METRICS) is defined from version 4
+    os2.fsSelection = sel | (1 << 7)
 
 
 def copy_vertical_metrics(font: TTFont, base: TTFont) -> None:

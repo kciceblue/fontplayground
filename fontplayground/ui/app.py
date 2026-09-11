@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import sys
 from pathlib import Path
 
@@ -122,6 +123,7 @@ class MainWindow(QMainWindow):
 
 
 def main() -> None:
+    logging.getLogger("fontTools").setLevel(logging.ERROR)  # timestamp/version warnings are noise here
     app = QApplication(sys.argv)
     app.setApplicationName("Font Playground")
     window = MainWindow(default_font_dirs(), config_dir())
