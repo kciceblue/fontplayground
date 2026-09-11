@@ -6,15 +6,19 @@ import logging
 import sys
 from pathlib import Path
 
-from PySide6.QtWidgets import QApplication, QFileDialog, QMainWindow, QTabWidget
+from PySide6.QtWidgets import QApplication, QFileDialog, QMainWindow, QMessageBox, QTabWidget
 
 from fontplayground.catalog.cache import CatalogCache
 from fontplayground.engine.spec import ForgeSpec
 from fontplayground.paths import config_dir, default_font_dirs
 from fontplayground.ui.fonts_tab import FontsTab
-from fontplayground.ui.forge_tab import ForgeTab
+from fontplayground.ui.forge_tab import ForgeTab, clean_stale_results
 from fontplayground.ui.preview import PreviewWidget
 from fontplayground.ui.workers import ScanWorker
+
+COMBINE_WAIT_MS = 180_000   # closing waits this long for a cancelled combine to reach its next stage boundary
+SCAN_WAIT_MS = 3_000        # closing waits this long for an interrupted scan to stop
+QUIT_QUESTION = "A combine is still running. Quit anyway?"
 
 
 def _read_json(path: Path, default):
@@ -43,6 +47,10 @@ class MainWindow(QMainWindow):
         self._settings = _read_json(self.settings_path, {"extra_dirs": []})
         self._pending_restore = _read_json(self.forge_settings_path, None)
         self.scan_worker: ScanWorker | None = None
+        self._pending_scan: bool | None = None   # use_cache of a scan requested while another was running
+        self._closing = False
+        self._forge_status = ""                  # what the forge tab last put in the status bar
+        clean_stale_results()                    # results of runs that did not get to discard them
 
         self.fonts_preview = PreviewWidget()
         self.forge_preview = PreviewWidget()
@@ -62,6 +70,8 @@ class MainWindow(QMainWindow):
         self.fonts_tab.addFolderRequested.connect(self.add_folder)
         self.forge_tab.settingsChanged.connect(self.save_forge_settings)
         self.forge_tab.materialRemoved.connect(self._on_material_removed)
+        self.forge_tab.statusMessage.connect(self._on_forge_status)
+        self.forge_tab.busyChanged.connect(self._on_forge_busy)
 
         self.start_scan(use_cache=True)
 
@@ -71,6 +81,8 @@ class MainWindow(QMainWindow):
 
     def start_scan(self, use_cache: bool) -> None:
         if self.scan_worker is not None and self.scan_worker.isRunning():
+            # Remember the request; _on_scan_finished starts it. A no-cache request wins over a cached one.
+            self._pending_scan = use_cache if self._pending_scan is None else (self._pending_scan and use_cache)
             return
         self.fonts_tab.begin_scan()
         self.statusBar().showMessage("Scanning fonts…")
@@ -81,6 +93,8 @@ class MainWindow(QMainWindow):
         self.scan_worker.start()
 
     def _on_scan_finished(self, result) -> None:
+        if self._closing or (self.scan_worker is not None and self.scan_worker.interrupted):
+            return  # a partial catalog: leave the ticks and the saved forge settings alone
         self.fonts_tab.end_scan(result)
         msg = f"{len(result.faces)} font faces found"
         if result.failed:
@@ -92,6 +106,11 @@ class MainWindow(QMainWindow):
             self.fonts_tab.set_ticked([m.face.key for m in spec.materials])
             self.forge_tab.from_settings(self._pending_restore, faces)
             self._pending_restore = None
+        if self._pending_scan is not None:
+            use_cache, self._pending_scan = self._pending_scan, None
+            if self.scan_worker is not None:
+                self.scan_worker.wait()  # run() has returned; let the thread exit so start_scan sees it idle
+            self.start_scan(use_cache)
 
     def add_folder(self) -> None:
         folder = QFileDialog.getExistingDirectory(self, "Add font folder")
@@ -112,13 +131,33 @@ class MainWindow(QMainWindow):
         keys = [f.key for f in self.fonts_tab.selected_faces() if f.key != key]
         self.fonts_tab.set_ticked(keys)
 
+    def _on_forge_status(self, text: str) -> None:
+        """Show the forge tab's validation error; clear it again only if it is still what the bar shows."""
+        bar = self.statusBar()
+        if text:
+            bar.showMessage(text)
+        elif bar.currentMessage() == self._forge_status:
+            bar.clearMessage()
+        self._forge_status = text
+
+    def _on_forge_busy(self, busy: bool) -> None:
+        self.fonts_tab.tree.setEnabled(not busy)  # ticks would change the materials under a running combine
+
     def save_forge_settings(self) -> None:
         _write_json(self.forge_settings_path, self.forge_tab.to_settings())
 
     def closeEvent(self, event) -> None:  # noqa: N802
+        if self.forge_tab.is_busy():
+            answer = QMessageBox.question(self, "Combine running", QUIT_QUESTION)
+            if answer != QMessageBox.StandardButton.Yes:
+                event.ignore()
+                return
+            self.forge_tab.cancel_combine(wait_ms=COMBINE_WAIT_MS)
+        self._closing = True
         if self.scan_worker is not None and self.scan_worker.isRunning():
-            self.scan_worker.requestInterruption()
-            self.scan_worker.wait(3000)
+            self.scan_worker.interrupt()
+            self.scan_worker.wait(SCAN_WAIT_MS)
+        self.forge_tab.discard_result()
         super().closeEvent(event)
 
 

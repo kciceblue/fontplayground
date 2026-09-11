@@ -26,7 +26,7 @@ On macOS/Linux use `.venv/bin/pip`.
 ## Fonts tab
 
 - Every font face found in the system and user font folders appears in the list, grouped by family. Use the search box to filter.
-- Click a face to preview it at three sizes. Type anything into the sample box. Characters the face does not contain are shown with a red background instead of being silently borrowed from another font.
+- Click a face to preview it at three sizes (unsupported faces such as colour emoji fonts can be previewed but not ticked). Type anything into the sample box. Characters the face does not contain are shown with a red background instead of being silently borrowed from another font.
 - Variable fonts get a weight slider.
 - Tick the faces you want to use as materials, then press **Go to Forge**.
 - **Add folder…** scans an extra folder (for fonts that are not installed). **Rescan** ignores the cache.
@@ -39,11 +39,11 @@ On macOS/Linux use `.venv/bin/pip`.
 - **Combine** builds the font in the background and shows a report: how many characters came from each material, warnings, and which sample characters nobody covers. The result is previewed with your sample text.
 - **Save…** writes the `.ttf`.
 
-Weight: variable fonts are instanced at the requested weight. Static fonts asked for a heavier weight get a synthetic bold (outlines are thickened); a lighter weight than the source is not possible and produces a warning.
+Weight: variable fonts are instanced at the requested weight. Static fonts asked for a heavier weight get a synthetic bold (outlines are thickened); a lighter weight than the source is not possible and produces a warning. A variable font whose positioning data cannot be instanced (Segoe UI Variable is one) is used without it and the report says so.
 
 ## What the result contains
 
-One glyph per character, no unused glyphs, hinting removed, OpenType features (ligatures, kerning, marks) kept per material, a fresh name table, vertical metrics from the base material, and the file marked installable. The report warns when a source font's licence restricts embedding; check it before distributing a forged font.
+One glyph per character, no unused glyphs, hinting removed, OpenType features (ligatures, kerning, marks) kept per material (legacy `kern` tables are converted to GPOS so they survive), a fresh name table, vertical metrics from the base material, and the file marked installable. The report warns when a source font's licence restricts embedding; check it before distributing a forged font.
 
 ## Not in this version
 

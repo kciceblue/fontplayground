@@ -4,6 +4,7 @@ from __future__ import annotations
 from bisect import bisect_right
 
 from PySide6.QtCore import Qt, Signal
+from PySide6.QtGui import QBrush, QPalette
 from PySide6.QtWidgets import (QHBoxLayout, QHeaderView, QLabel, QLineEdit, QProgressBar, QPushButton, QSplitter,
                                QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget)
 
@@ -141,6 +142,8 @@ class FontsTab(QWidget):
         self.progress.show()
         self.status_label.setText("Scanning fonts…")
         self.status_label.setToolTip("")
+        self.rescan_button.setEnabled(False)
+        self.add_folder_button.setEnabled(False)
 
     def add_face(self, face: FontFace) -> None:
         if face.key in self._face_items:
@@ -149,12 +152,17 @@ class FontsTab(QWidget):
         family_item = self._family_item(face.family)
 
         item = QTreeWidgetItem([face.style, face.format_tag])
-        item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
-        item.setCheckState(0, Qt.CheckState.Unchecked)
         item.setData(0, Qt.ItemDataRole.UserRole, face.key)
         item.setToolTip(1, face.path)
-        if not face.supported:
-            item.setDisabled(True)
+        if face.supported:
+            item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
+            item.setCheckState(0, Qt.CheckState.Unchecked)
+        else:
+            # Still selectable, so it can be previewed and inspected; only ticking is off (no checkbox at all).
+            item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsUserCheckable)
+            grey = QBrush(self.tree.palette().color(QPalette.ColorGroup.Disabled, QPalette.ColorRole.Text))
+            item.setForeground(0, grey)
+            item.setForeground(1, grey)
             item.setToolTip(0, face.unsupported_reason)
         item.setHidden(False)
         self._face_items[face.key] = item
@@ -185,6 +193,8 @@ class FontsTab(QWidget):
         else:
             self.status_label.setToolTip("")
         self.status_label.setText(text)
+        self.rescan_button.setEnabled(True)
+        self.add_folder_button.setEnabled(True)
         pending, self._pending_ticks = self._pending_ticks, []
         if pending:
             self.set_ticked(pending)
@@ -220,10 +230,11 @@ class FontsTab(QWidget):
 
     # ----- ticking -----
     def set_ticked(self, keys: list[FaceKey]) -> None:
+        """Replace the ticks with `keys` (in that order); unknown and unsupported faces are skipped."""
         wanted: list[FaceKey] = []
         for k in keys:
             k = tuple(k)
-            if k in self._face_items and k not in wanted:
+            if k in self._face_items and k not in wanted and self._faces[k].supported:
                 wanted.append(k)
         self._restoring = True
         try:
@@ -245,6 +256,15 @@ class FontsTab(QWidget):
         if key is None:
             return
         key = tuple(key)
+        face = self._faces.get(key)
+        if face is not None and not face.supported:
+            if item.data(0, Qt.ItemDataRole.CheckStateRole) is not None:  # a programmatic tick: take it back
+                self._restoring = True
+                try:
+                    item.setData(0, Qt.ItemDataRole.CheckStateRole, None)
+                finally:
+                    self._restoring = False
+            return
         checked = item.checkState(0) == Qt.CheckState.Checked
         if checked and key not in self._tick_order:
             self._tick_order.append(key)

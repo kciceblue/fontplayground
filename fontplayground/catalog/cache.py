@@ -7,6 +7,8 @@ from pathlib import Path
 
 from fontplayground.catalog.face import FontFace
 
+SCHEMA = 1  # bump when FontFace or the entry layout changes; older files are discarded wholesale
+
 
 def _ranges(codepoints) -> list[list[int]]:
     out: list[list[int]] = []
@@ -42,20 +44,38 @@ class CatalogCache:
         self._entries: dict[str, dict] = {}
 
     def load(self) -> None:
+        """Read the cache file; anything unreadable or written by another schema version is discarded."""
+        self._entries = {}
         try:
-            self._entries = json.loads(self.path.read_text(encoding="utf-8"))
+            data = json.loads(self.path.read_text(encoding="utf-8"))
         except (OSError, ValueError):
-            self._entries = {}
+            return
+        if not isinstance(data, dict) or data.get("schema") != SCHEMA:
+            return
+        entries = data.get("entries")
+        if isinstance(entries, dict):
+            self._entries = entries
 
     def save(self) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        self.path.write_text(json.dumps(self._entries), encoding="utf-8")
+        self.path.write_text(json.dumps({"schema": SCHEMA, "entries": self._entries}), encoding="utf-8")
 
     def get(self, path: str, size: int, mtime: float) -> list[FontFace] | None:
+        """The cached faces for a file that still has this size and mtime, else None.
+
+        An entry that cannot be turned back into FontFaces (corrupt or stale layout) is dropped and treated as a
+        miss, so the file is read again instead of being reported as unreadable.
+        """
         e = self._entries.get(path)
-        if not e or e["size"] != size or abs(e["mtime"] - mtime) > 1e-6:
+        if not e:
             return None
-        return [face_from_dict(f) for f in e["faces"]]
+        try:
+            if e["size"] != size or abs(e["mtime"] - mtime) > 1e-6:
+                return None
+            return [face_from_dict(f) for f in e["faces"]]
+        except (KeyError, TypeError, ValueError, AttributeError):
+            self._entries.pop(path, None)
+            return None
 
     def put(self, path: str, size: int, mtime: float, faces: list[FontFace]) -> None:
         self._entries[path] = {"size": size, "mtime": mtime, "faces": [face_to_dict(f) for f in faces]}

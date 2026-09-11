@@ -27,6 +27,21 @@ COL_NUM, COL_FONT, COL_WEIGHT, COL_SCALE, COL_BASE, COL_NOTE = range(6)
 AUTO_RULE = "Auto (priority order)"
 AS_IS = "As is"
 DEFAULT_WEIGHTS = [str(w) for w in range(100, 950, 50)]
+RESULT_DIR = Path(tempfile.gettempdir()) / "fontplayground"   # combine results live here until saved or discarded
+RESULT_GLOB = "forged-*.ttf"
+
+
+def clean_stale_results() -> None:
+    """Delete results left behind by earlier runs (a crash, or a quit while a combine was still running)."""
+    try:
+        stale = list(RESULT_DIR.glob(RESULT_GLOB))
+    except OSError:
+        return
+    for path in stale:
+        try:
+            path.unlink()
+        except OSError:
+            pass
 
 
 @dataclass
@@ -50,6 +65,8 @@ def _note_for(face: FontFace) -> str:
 class ForgeTab(QWidget):
     settingsChanged = Signal()          # any change to rows, rules, defaults, output path
     materialRemoved = Signal(object)    # face.key removed via the Remove button
+    statusMessage = Signal(str)         # first validation error of the current spec, "" when it is valid
+    busyChanged = Signal(bool)          # a combine started (True) or ended (False)
 
     def __init__(self, preview: PreviewWidget, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -58,6 +75,8 @@ class ForgeTab(QWidget):
         self._base_index = 0
         self._rules: dict[str, FaceKey | None] = {g.id: None for g in GROUPS}
         self._base_group: QButtonGroup | None = None
+        self._busy = False
+        self._validation_error = ""
         self.result_path: str | None = None
         self.worker: CombineWorker | None = None
 
@@ -73,10 +92,12 @@ class ForgeTab(QWidget):
 
         self._rebuild_table()
         self._rebuild_rules()
+        self._set_busy(False)
+        self._revalidate()
 
     # ----- construction -----
     def _build_materials_box(self) -> QGroupBox:
-        box = QGroupBox("Materials")
+        box = self.materials_box = QGroupBox("Materials")
         layout = QVBoxLayout(box)
         self.table = QTableWidget(0, len(MATERIAL_COLUMNS))
         self.table.setHorizontalHeaderLabels(MATERIAL_COLUMNS)
@@ -104,7 +125,7 @@ class ForgeTab(QWidget):
         return box
 
     def _build_rules_box(self) -> QGroupBox:
-        box = QGroupBox("Script rules")
+        box = self.rules_box = QGroupBox("Script rules")
         layout = QVBoxLayout(box)
         self.rules_table = QTableWidget(len(GROUPS), 2)
         self.rules_table.setHorizontalHeaderLabels(["Script", "Material"])
@@ -122,7 +143,7 @@ class ForgeTab(QWidget):
         return box
 
     def _build_defaults_box(self) -> QGroupBox:
-        box = QGroupBox("Defaults and output")
+        box = self.defaults_box = QGroupBox("Defaults and output")
         layout = QVBoxLayout(box)
         form = QFormLayout()
         self.family_edit = QLineEdit("Forged")
@@ -159,7 +180,6 @@ class ForgeTab(QWidget):
         self.stage_label = QLabel("")
         layout.addWidget(self.progress_bar)
         layout.addWidget(self.stage_label)
-        self._set_busy(False)
         layout.addStretch(1)
 
         self.family_edit.textChanged.connect(self._emit_changed)
@@ -173,7 +193,7 @@ class ForgeTab(QWidget):
         return box
 
     def _build_preview_box(self) -> QGroupBox:
-        box = QGroupBox("Preview and report")
+        box = self.preview_box = QGroupBox("Preview and report")
         layout = QVBoxLayout(box)
         layout.addWidget(self.preview, 2)
         self.report = QPlainTextEdit()
@@ -199,7 +219,9 @@ class ForgeTab(QWidget):
         self._rules = {g: (k if k in by_key else None) for g, k in self._rules.items()}
         self._refresh()
         if [r.face.key for r in self._rows] != old_keys:
-            self.settingsChanged.emit()
+            self._emit_changed()
+        else:
+            self._revalidate()  # the faces themselves may have changed (rescan), so re-check anyway
 
     def build_spec(self) -> ForgeSpec:
         index_of = {r.face.key: i for i, r in enumerate(self._rows)}
@@ -236,7 +258,7 @@ class ForgeTab(QWidget):
             for w in (self.family_edit, self.style_edit, self.default_weight_combo, self.default_scale_spin):
                 w.blockSignals(False)
         self._refresh()
-        self.settingsChanged.emit()
+        self._emit_changed()
 
     def to_settings(self) -> dict:
         d = self.build_spec().to_dict()
@@ -251,18 +273,24 @@ class ForgeTab(QWidget):
             self.output_edit.blockSignals(False)
         self.apply_spec(ForgeSpec.from_dict(d, faces_by_key))
 
+    def validation_error(self) -> str:
+        """The first problem with the current spec (also the Combine button's tooltip), or "" when it is valid."""
+        return self._validation_error
+
+    def is_busy(self) -> bool:
+        return self.worker is not None and self.worker.isRunning()
+
     def combine(self) -> None:
-        if self.worker is not None and self.worker.isRunning():
+        if self.is_busy():
             return
         spec = self.build_spec()
         errors = spec.validate()
-        if errors:
+        if errors:  # the button is disabled in this state; this covers programmatic calls
             QMessageBox.warning(self, "Cannot combine", "\n".join(errors))
             return
         self.discard_result()
-        out_dir = Path(tempfile.gettempdir()) / "fontplayground"
-        out_dir.mkdir(parents=True, exist_ok=True)
-        out = out_dir / f"forged-{uuid4().hex[:8]}.ttf"
+        RESULT_DIR.mkdir(parents=True, exist_ok=True)
+        out = RESULT_DIR / f"forged-{uuid4().hex[:8]}.ttf"
         self._set_busy(True)
         self.progress_bar.setValue(0)
         self.stage_label.setText("Starting…")
@@ -270,7 +298,20 @@ class ForgeTab(QWidget):
         self.worker.progress.connect(self._on_progress)
         self.worker.succeeded.connect(self._on_succeeded)
         self.worker.failed.connect(self._on_failed)
+        self.worker.cancelled.connect(self._on_cancelled)
         self.worker.start()
+
+    def cancel_combine(self, wait_ms: int | None = None) -> bool:
+        """Ask a running combine to stop at its next stage boundary; optionally block until it has.
+
+        Returns True when there was a combine to cancel. The worker then emits `cancelled` (not `failed`).
+        """
+        if not self.is_busy():
+            return False
+        self.worker.cancel()
+        if wait_ms is not None:
+            self.worker.wait(wait_ms)
+        return True
 
     def save_to(self, path: str) -> None:
         if not self.result_path or not Path(self.result_path).is_file():
@@ -327,7 +368,9 @@ class ForgeTab(QWidget):
         self.table.setRowCount(len(self._rows))
         for i, row in enumerate(self._rows):
             self.table.setItem(i, COL_NUM, QTableWidgetItem(str(i + 1)))
-            self.table.setItem(i, COL_FONT, QTableWidgetItem(row.face.display_name))
+            font_item = QTableWidgetItem(row.face.display_name)
+            font_item.setToolTip(f"{row.face.display_name}\n{row.face.path} (face {row.face.index})")
+            self.table.setItem(i, COL_FONT, font_item)
 
             weight = QSpinBox()
             weight.setRange(0, 1000)
@@ -350,7 +393,9 @@ class ForgeTab(QWidget):
             self._base_group.addButton(radio, i)
             self.table.setCellWidget(i, COL_BASE, radio)
 
-            self.table.setItem(i, COL_NOTE, QTableWidgetItem(_note_for(row.face)))
+            note_item = QTableWidgetItem(_note_for(row.face))
+            note_item.setToolTip(note_item.text())  # the column elides long notes
+            self.table.setItem(i, COL_NOTE, note_item)
         self._base_group.idToggled.connect(self._on_base_toggled)
         has_rows = bool(self._rows)
         for b in (self.up_button, self.down_button, self.remove_button):
@@ -391,7 +436,7 @@ class ForgeTab(QWidget):
         self._rows[row], self._rows[new] = self._rows[new], self._rows[row]
         self._base_index = self._index_of(base_key)
         self._refresh(select=new)
-        self.settingsChanged.emit()
+        self._emit_changed()
 
     def _remove_current(self) -> None:
         row = self._current_row()
@@ -403,31 +448,43 @@ class ForgeTab(QWidget):
         self._rules = {g: (None if k == removed.face.key else k) for g, k in self._rules.items()}
         self._refresh(select=min(row, len(self._rows) - 1))
         self.materialRemoved.emit(removed.face.key)
-        self.settingsChanged.emit()
+        self._emit_changed()
 
     def _on_weight_changed(self, row: int, value: int) -> None:
         if 0 <= row < len(self._rows):
             self._rows[row].weight = value or None
-            self.settingsChanged.emit()
+            self._emit_changed()
 
     def _on_scale_changed(self, row: int, value: int) -> None:
         if 0 <= row < len(self._rows):
             self._rows[row].scale = value / 100 if value else None
-            self.settingsChanged.emit()
+            self._emit_changed()
 
     def _on_base_toggled(self, row: int, checked: bool) -> None:
         if checked and 0 <= row < len(self._rows) and row != self._base_index:
             self._base_index = row
-            self.settingsChanged.emit()
+            self._emit_changed()
 
     def _on_rule_changed(self, group_id: str, index: int) -> None:
         key = self._rows[index - 1].face.key if 0 < index <= len(self._rows) else None
         if self._rules.get(group_id) != key:
             self._rules[group_id] = key
-            self.settingsChanged.emit()
+            self._emit_changed()
 
     def _emit_changed(self, *_args) -> None:
+        """Every edit goes through here: re-check the spec (Combine button, status text), then tell the app."""
+        self._revalidate()
         self.settingsChanged.emit()
+
+    def _revalidate(self) -> None:
+        errors = self.build_spec().validate()
+        self._validation_error = errors[0] if errors else ""
+        self._update_combine_button()
+        self.statusMessage.emit(self._validation_error)
+
+    def _update_combine_button(self) -> None:
+        self.combine_button.setEnabled(not self._busy and not self._validation_error)
+        self.combine_button.setToolTip(self._validation_error)
 
     # ----- output / combine / save -----
     def _browse_output(self) -> None:
@@ -436,9 +493,16 @@ class ForgeTab(QWidget):
             self.output_edit.setText(path)
 
     def _set_busy(self, busy: bool) -> None:
-        self.combine_button.setEnabled(not busy)
+        """While a combine runs, the inputs are frozen; the preview editor and the report stay usable."""
+        changed = busy != self._busy
+        self._busy = busy
+        for box in (self.materials_box, self.rules_box, self.defaults_box):
+            box.setEnabled(not busy)
+        self._update_combine_button()
         self.progress_bar.setVisible(busy)
         self.stage_label.setVisible(busy)
+        if changed:
+            self.busyChanged.emit(busy)
 
     def _on_progress(self, stage: str, fraction: float) -> None:
         self.progress_bar.setValue(int(fraction * 100))
@@ -463,6 +527,15 @@ class ForgeTab(QWidget):
         self._set_busy(False)
         first_line = message.strip().splitlines()[0] if message.strip() else "Unknown error"
         QMessageBox.critical(self, "Combine failed", first_line)
+
+    def _on_cancelled(self) -> None:
+        if self.worker is not None:  # the file may exist if the cancel landed between "finish" and "verify"
+            try:
+                Path(self.worker.output_path).unlink()
+            except OSError:
+                pass
+        self.report.setPlainText("Combine cancelled.")
+        self._set_busy(False)
 
     def _save(self) -> None:
         path, _ = QFileDialog.getSaveFileName(self, "Save font", self.output_edit.text(), "TrueType font (*.ttf)")

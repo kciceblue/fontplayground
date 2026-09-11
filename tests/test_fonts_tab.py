@@ -2,6 +2,7 @@ from pathlib import Path
 
 import pytest
 from PySide6.QtCore import Qt
+from PySide6.QtGui import QPalette
 
 from fontplayground.catalog.face import FontFace, read_faces
 from fontplayground.catalog.scanner import ScanResult
@@ -45,13 +46,13 @@ def tab(qtbot, font_dir):
 
 # 1
 def test_tree_groups_faces_by_family_sorted(tab):
-    assert tab.tree.topLevelItemCount() == 4
-    assert family_texts(tab) == ["Fixture A", "Fixture B", "Fixture C", "Fixture V"]
+    assert tab.tree.topLevelItemCount() == 5
+    assert family_texts(tab) == ["Fixture A", "Fixture B", "Fixture C", "Fixture K", "Fixture V"]
     # the two TTC faces merge into the A and C families
     assert family_item(tab, "Fixture A").childCount() == 2
     assert family_item(tab, "Fixture C").childCount() == 2
     assert family_item(tab, "Fixture B").childCount() == 1
-    assert len(tab.faces_by_key()) == 6
+    assert len(tab.faces_by_key()) == 7
     a = face_at(tab.fixture_faces, "A.ttf")
     row = tab.item_for(a.key)
     assert row.text(0) == "Regular" and row.text(1) == "TTF"
@@ -95,7 +96,7 @@ def test_filter_hides_families_without_matches(tab):
     tab.apply_filter("BOLD")
     assert family_texts_visible(tab) == ["Fixture B"]
     tab.apply_filter("")
-    assert family_texts_visible(tab) == ["Fixture A", "Fixture B", "Fixture C", "Fixture V"]
+    assert family_texts_visible(tab) == ["Fixture A", "Fixture B", "Fixture C", "Fixture K", "Fixture V"]
     # typing in the search box drives the same filter
     tab.search.setText("fixture v")
     assert family_texts_visible(tab) == ["Fixture V"]
@@ -154,9 +155,13 @@ def test_scan_lifecycle_progress_and_status(qtbot, font_dir):
     tab = FontsTab(PreviewWidget(sizes=(12,)))
     qtbot.addWidget(tab)
     assert tab.progress.isHidden()
+    assert tab.rescan_button.isEnabled() and tab.add_folder_button.isEnabled()
     tab.begin_scan()
     assert not tab.progress.isHidden() and tab.progress.value() == 0
     assert tab.tree.topLevelItemCount() == 0
+    # another scan cannot be requested from the buttons while one runs
+    assert not tab.rescan_button.isEnabled() and not tab.add_folder_button.isEnabled()
+    assert tab.forge_button.isEnabled()
     faces = all_faces(font_dir)
     for f in faces:
         tab.add_face(f)
@@ -164,10 +169,11 @@ def test_scan_lifecycle_progress_and_status(qtbot, font_dir):
     assert (tab.progress.value(), tab.progress.maximum()) == (3, 5)
     tab.end_scan(ScanResult(faces=faces, failed=[("bad.ttf", "TTLibError: boom")]))
     assert tab.progress.isHidden()
-    assert tab.status_label.text() == "6 faces in 4 families, 1 unreadable file"
+    assert tab.rescan_button.isEnabled() and tab.add_folder_button.isEnabled()
+    assert tab.status_label.text() == "7 faces in 5 families, 1 unreadable file"
     assert "bad.ttf: TTLibError: boom" in tab.status_label.toolTip()
     tab.end_scan(ScanResult(faces=faces))
-    assert tab.status_label.text() == "6 faces in 4 families"
+    assert tab.status_label.text() == "7 faces in 5 families"
 
 
 def test_rescan_clears_tree_and_restores_ticks(qtbot, tab):
@@ -187,7 +193,7 @@ def test_rescan_clears_tree_and_restores_ticks(qtbot, tab):
     assert calls == [[a]]
 
 
-def test_unsupported_face_is_disabled_with_reason(qtbot):
+def test_unsupported_face_is_greyed_previewable_but_cannot_be_ticked(qtbot):
     tab = FontsTab(PreviewWidget(sizes=(12,)))
     qtbot.addWidget(tab)
     tab.begin_scan()
@@ -196,12 +202,36 @@ def test_unsupported_face_is_disabled_with_reason(qtbot):
     light = fake_face({0x41}, path="light.ttf", family="Fixture Z", style="Light", weight=300)
     for f in (bad, heavy, light):
         tab.add_face(f)
+    tab.end_scan(ScanResult(faces=[bad, heavy, light]))
     row = tab.item_for(bad.key)
-    assert row.isDisabled()
+    # the row stays enabled (so it can become current) but is greyed, with the reason as tooltip and no checkbox
+    assert not row.isDisabled()
+    assert not (row.flags() & Qt.ItemFlag.ItemIsUserCheckable)
+    assert row.data(0, Qt.ItemDataRole.CheckStateRole) is None
     assert row.toolTip(0) == "CFF2 outlines are not supported"
-    assert not tab.item_for(light.key).isDisabled()
+    grey = tab.tree.palette().color(QPalette.ColorGroup.Disabled, QPalette.ColorRole.Text)
+    assert row.foreground(0).color() == grey and row.foreground(1).color() == grey
+    good = tab.item_for(light.key)
+    assert not good.isDisabled() and good.flags() & Qt.ItemFlag.ItemIsUserCheckable
+    assert good.foreground(0).color() != grey
     fam = family_item(tab, "Fixture Z")
     assert [fam.child(i).text(0) for i in range(fam.childCount())] == ["Light", "Regular", "Black"]
+
+    # it can be the current item: the preview and the info strip show it
+    tab.tree.setCurrentItem(row)
+    assert tab.tree.currentItem() is row
+    assert tab.info_label.text().startswith("cff2.otf (face 0)")
+    assert "CFF2 outlines" in tab.info_label.text()
+
+    # but ticking is refused, whether restored from settings or forced onto the item
+    calls: list[list[FontFace]] = []
+    tab.selectionChanged.connect(lambda faces: calls.append(list(faces)))
+    tab.set_ticked([bad.key, light.key])
+    assert tab.selected_faces() == [light] and calls == [[light]]
+    row.setCheckState(0, Qt.CheckState.Checked)
+    assert tab.selected_faces() == [light] and calls == [[light]]
+    assert row.data(0, Qt.ItemDataRole.CheckStateRole) is None
+    assert tab.selected_label.text() == "Selected: 1"
 
 
 def test_filter_applies_to_faces_added_during_scan(tab):
@@ -211,7 +241,8 @@ def test_filter_applies_to_faces_added_during_scan(tab):
     assert family_texts_visible(tab) == ["Fixture Z"]
     tab.add_face(fake_face({0x41}, path="y.ttf", family="Fixture Y", style="Regular"))
     assert family_texts_visible(tab) == ["Fixture Z"]
-    assert family_texts(tab) == ["Fixture A", "Fixture B", "Fixture C", "Fixture V", "Fixture Y", "Fixture Z"]
+    assert family_texts(tab) == ["Fixture A", "Fixture B", "Fixture C", "Fixture K", "Fixture V", "Fixture Y",
+                                 "Fixture Z"]
 
 
 def test_buttons_emit_signals(qtbot, tab):
