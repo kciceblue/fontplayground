@@ -1,6 +1,7 @@
 """Turn one material into a merge-ready TrueType part."""
 from __future__ import annotations
 
+import struct
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -11,10 +12,12 @@ from fontTools.ttLib import TTFont, newTable
 from fontTools.ttLib.scaleUpem import scale_upem
 from fontTools.varLib.instancer import instantiateVariableFont
 
-from fontplayground.engine.spec import MaterialSpec
+from fontplayground.engine.kern import kern_to_gpos
+from fontplayground.engine.spec import ForgeError, MaterialSpec
 from fontplayground.engine.synth_bold import MAX_DELTA, embolden
 
 KEEP_TABLES = {"head", "hhea", "maxp", "OS/2", "hmtx", "cmap", "loca", "glyf", "name", "post", "GSUB", "GPOS", "GDEF", "kern"}
+MAX_UPEM = 16384
 
 
 @dataclass
@@ -119,8 +122,24 @@ def prepare(material: MaterialSpec, codepoints, target_upem: int, weight: int | 
     warnings: list[str] = []
     font = load_face(material)
     if face.is_variable:
-        font = instance_variable(font, weight)
+        try:
+            font = instance_variable(font, weight)
+        except Exception:
+            # Some system fonts (e.g. Segoe UI Variable) carry GPOS variation indices that point
+            # outside their VarStore; fontTools cannot instance those. Retry without GPOS.
+            font.close()
+            font = load_face(material)
+            if "GPOS" in font:
+                del font["GPOS"]
+            try:
+                font = instance_variable(font, weight)
+            except Exception as e:
+                raise ForgeError("prepare", face.display_name,
+                                 f"cannot instance this variable font: {type(e).__name__}: {e}") from e
+            warnings.append("GPOS dropped: the font's variable positioning data is broken, "
+                            "so kerning and mark positioning are lost")
     subset_font(font, codepoints)
+    kern_to_gpos(font)  # legacy 'kern' would be dropped by the merger; GPOS survives
     if face.outline == "CFF":
         cff_to_glyf(font)
     # Synthetic bold runs in the material's own units, before scaling, so the extra
@@ -135,6 +154,12 @@ def prepare(material: MaterialSpec, codepoints, target_upem: int, weight: int | 
     scale_font(font, target_upem, scale)
     strip_tables(font)
     out = Path(workdir) / f"{index}.ttf"
-    font.save(str(out))
-    font.close()
+    try:
+        font.save(str(out))
+    except (struct.error, OverflowError, ValueError) as e:
+        raise ForgeError("prepare", face.display_name,
+                         f"scale {scale * 100:g}% pushes this font's coordinates past the TrueType limit; "
+                         f"use a smaller scale ({type(e).__name__}: {e})") from e
+    finally:
+        font.close()
     return PreparedFont(str(out), target_upem, warnings)

@@ -18,11 +18,18 @@ def embolden(font: TTFont, delta_weight: int) -> None:
     glyf, hmtx = font["glyf"], font["hmtx"]
     glyph_set = font.getGlyphSet()
     w = stroke_width(delta, font["head"].unitsPerEm)
+
+    # Pass 1: snapshot every outline (components decomposed) BEFORE anything is modified.
+    # A composite drawn after its base glyph would otherwise be thickened twice.
+    paths: dict[str, pathops.Path] = {}
     for name in font.getGlyphOrder():
         path = pathops.Path()
-        glyph_set[name].draw(path.getPen(glyphSet=glyph_set))  # decomposes components
-        if not list(path.contours):
-            continue
+        glyph_set[name].draw(path.getPen(glyphSet=glyph_set))
+        if list(path.contours):
+            paths[name] = path
+
+    # Pass 2: stroke + union each snapshot and write the (now simple) glyph back.
+    for name, path in paths.items():
         stroked = pathops.Path(path)
         stroked.stroke(w, pathops.LineCap.ROUND_CAP, pathops.LineJoin.ROUND_JOIN, 4.0)
         stroked.convertConicsToQuads()

@@ -30,3 +30,14 @@ def test_prepare_applies_synthetic_bold_only_when_needed(font_dir, tmp_path):
     assert same.warnings == []
     (v,) = read_faces(font_dir / "V.ttf")
     assert prepare(MaterialSpec(v), cps("a"), 1000, 900, 1.0, tmp_path, 3).warnings == []
+
+
+def test_composite_glyph_is_emboldened_once(font_dir):
+    f = TTFont(str(font_dir / "K.ttf"))
+    embolden(f, 300)
+    base, comp = f["glyf"]["uni0061"], f["glyf"]["uni00E0"]
+    base.recalcBounds(f["glyf"])
+    comp.recalcBounds(f["glyf"])
+    assert (comp.xMin, comp.xMax) == (base.xMin, base.xMax)
+    assert f["hmtx"]["uni00E0"] == f["hmtx"]["uni0061"] == (260, 50)
+    assert comp.numberOfContours >= 1  # decomposed into a simple glyph

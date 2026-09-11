@@ -6,6 +6,7 @@ from datetime import date
 from pathlib import Path
 
 from fontTools.merge import Merger
+from fontTools.otlLib.maxContextCalc import maxCtxFont
 from fontTools.subset import Subsetter
 from fontTools.ttLib import TTFont
 
@@ -29,9 +30,18 @@ def final_subset(font: TTFont, codepoints) -> None:
 
 
 def postscript_name(family: str, style: str) -> str:
-    fam = re.sub(r"[^A-Za-z0-9]", "", family)
-    sty = re.sub(r"[^A-Za-z0-9]", "", style)
+    """ASCII-only PostScript name; non-ASCII names (e.g. CJK) fall back to generic tokens."""
+    fam = re.sub(r"[^A-Za-z0-9]", "", family) or "Forged"
+    sty = re.sub(r"[^A-Za-z0-9]", "", style) or "Regular"
     return f"{fam}-{sty}"[:63]
+
+
+def _mac_roman_safe(value: str) -> bool:
+    try:
+        value.encode("mac_roman")
+        return True
+    except UnicodeEncodeError:
+        return False
 
 
 def set_names(font: TTFont, family: str, style: str, sources: list[str]) -> None:
@@ -54,7 +64,21 @@ def set_names(font: TTFont, family: str, style: str, sources: list[str]) -> None
         records[1], records[2], records[16], records[17] = full, legacy, family, style
     for nid, value in records.items():
         name.setName(value, nid, 3, 1, 0x409)
-        name.setName(value, nid, 1, 0, 0)
+        if _mac_roman_safe(value):  # the Macintosh record cannot hold CJK etc.; platform 3 is enough everywhere
+            name.setName(value, nid, 1, 0, 0)
+
+
+OS2_V4_FIELDS = (("ulCodePageRange1", 0), ("ulCodePageRange2", 0), ("sxHeight", 0), ("sCapHeight", 0),
+                 ("usDefaultChar", 0), ("usBreakChar", 32), ("usMaxContext", 0))
+
+
+def upgrade_os2(font: TTFont, base: TTFont) -> None:
+    """Raise OS/2 to version 4 (needed for fsSelection bit 7), filling fields older tables lack."""
+    os2, base_os2 = font["OS/2"], base["OS/2"]
+    for attr, default in OS2_V4_FIELDS:
+        if not hasattr(os2, attr):
+            setattr(os2, attr, getattr(base_os2, attr, default))
+    os2.version = max(int(os2.version), 4)
 
 
 def set_style_bits(font: TTFont, style: str) -> None:
@@ -69,8 +93,7 @@ def set_style_bits(font: TTFont, style: str) -> None:
         sel |= 1 << 5
     if not bold and not italic:
         sel |= 1 << 6
-    os2.version = max(int(os2.version), 4)  # bit 7 (USE_TYPO_METRICS) is defined from version 4
-    os2.fsSelection = sel | (1 << 7)
+    os2.fsSelection = sel | (1 << 7)  # USE_TYPO_METRICS; upgrade_os2() guarantees version >= 4
 
 
 def copy_vertical_metrics(font: TTFont, base: TTFont) -> None:
@@ -86,6 +109,7 @@ def copy_vertical_metrics(font: TTFont, base: TTFont) -> None:
 def finish(font: TTFont, spec: ForgeSpec, base: TTFont, codepoints, weight_class: int) -> None:
     final_subset(font, codepoints)
     set_names(font, spec.family_name.strip(), spec.style_name.strip(), [m.face.display_name for m in spec.materials])
+    upgrade_os2(font, base)
     set_style_bits(font, spec.style_name)
     copy_vertical_metrics(font, base)
     os2 = font["OS/2"]
@@ -93,6 +117,7 @@ def finish(font: TTFont, spec: ForgeSpec, base: TTFont, codepoints, weight_class
     os2.fsType = 0
     os2.recalcUnicodeRanges(font)
     os2.recalcCodePageRanges(font)
+    os2.usMaxContext = maxCtxFont(font)
     for tag in LEFTOVER_TABLES:
         if tag in font:
             del font[tag]

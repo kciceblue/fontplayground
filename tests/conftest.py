@@ -16,4 +16,7 @@ def font_dir(tmp_path_factory) -> Path:
     c = build_font(d / "C.ttf", "Fixture C", "Regular", cps("a→Ω"), upem=2048, fs_type=2)
     build_font(d / "V.ttf", "Fixture V", "Regular", cps("ab"), variable=True)
     build_collection(d / "T.ttc", [a, c])
+    # K: old OS/2 (v1), a composite glyph U+00E0 built from 'a', and a legacy kern pair a/b
+    build_font(d / "K.ttf", "Fixture K", "Regular", cps("ab"), os2_version=1,
+               composites={0xE0: ord("a")}, kern={(ord("a"), ord("b")): -50})
     return d

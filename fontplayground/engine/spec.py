@@ -55,10 +55,14 @@ class ForgeSpec:
         for g, idx in self.script_rules.items():
             if idx is not None and not 0 <= idx < n:
                 errors.append(f"Rule for {g} points to a missing material.")
+        base_upem = self.materials[self.base_index].face.upem if 0 <= self.base_index < n else None
         for i, m in enumerate(self.materials):
             s = self.resolved_scale(i)
             if not 0.1 <= s <= 10:
                 errors.append(f"{m.face.display_name}: scale {s:g} must be between 0.1 and 10.")
+            elif base_upem and round(base_upem * s) > 16384:
+                errors.append(f"{m.face.display_name}: scale {s * 100:g}% is too large for a {base_upem}-unit base "
+                              f"(maximum {16384 / base_upem * 100:.0f}%).")
             w = self.resolved_weight(i)
             if w is not None and not 1 <= w <= 1000:
                 errors.append(f"{m.face.display_name}: weight {w} must be between 1 and 1000.")
