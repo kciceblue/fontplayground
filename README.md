@@ -1,10 +1,6 @@
 # Font Playground
 
-A small desktop app for people who find FontForge too much. It does three things:
-
-1. Scans the fonts installed on your computer and lists them.
-2. Previews any font with text you type, in any language, and shows honestly which characters the font lacks.
-3. Forges several fonts into one new `.ttf`, where every character comes from exactly one font you chose.
+A small desktop app for people who find FontForge too much. Pick a couple of installed fonts, see exactly which one will draw which characters, and forge them into one `.ttf` you can save or install. Typical use: a Latin font you like plus a Chinese, Japanese or Korean font, merged so every app shows both properly.
 
 ## Install
 
@@ -23,31 +19,25 @@ On macOS/Linux use `.venv/bin/pip`.
 .venv\Scripts\python -m fontplayground
 ```
 
-## Fonts tab
+## The three steps
 
-- Every font face found in the system and user font folders appears in the list, grouped by family. Use the search box to filter.
-- Click a face to preview it at three sizes (unsupported faces such as colour emoji fonts can be previewed but not ticked). Type anything into the sample box. Characters the face does not contain are shown with a red background instead of being silently borrowed from another font.
-- Variable fonts get a weight slider.
-- Tick the faces you want to use as materials, then press **Go to Forge**.
-- **Add folder…** scans an extra folder (for fonts that are not installed). **Rescan** ignores the cache.
+The window is one path: **1 Pick fonts → 2 Check → 3 Forge & save**. The materials tray at the bottom always shows what you have picked, tells you what your sample text still lacks, and offers one-click suggestions. The button at the bottom right always says what happens next.
 
-## Forge tab
+**1 Pick fonts.** Search the fonts installed on your computer (scanned once, then cached). Each family shows badges for the scripts it covers, so a font with Han or Kana is easy to spot. Click a family to preview it with your own sample text in any language; characters the font lacks are shown in red. The line under the preview tells you what this font would add to your mix. Press **Add to materials**. The first font you add is the **Main** font: its letters win wherever fonts overlap, and it sets the line spacing.
 
-- **Materials** lists the ticked faces in priority order. Move them up or down. For each one you can set a weight (100–900) and a scale (%) or leave "default". The **Base** material supplies line spacing.
-- **Script rules** assign a script group (Latin, Cyrillic, Han, Kana, Hangul, Arabic, symbols, emoji, …) to a specific material. Anything left on "Auto" follows the priority order: the first material that has the character supplies it.
-- **Defaults and output** hold the family and style name, the default weight ("As is" keeps each font's own weight) and default scale, and the output file.
-- **Combine** builds the font in the background and shows a report: how many characters came from each material, warnings, and which sample characters nobody covers. The result is previewed with your sample text.
-- **Save…** writes the `.ttf`.
+**2 Check.** One card per font shows what it will supply. On the right, "How the result will look" draws every character of your sample in the font that will actually supply it, before any file exists. "Who supplies what" lists only the scripts your fonts cover, with the automatic choice explained; change it if you disagree. Open **Adjust** on a card to make a font bolder (variable fonts are instanced, static fonts get a synthetic bold) or scale it so it sits well next to the main font.
 
-Weight: variable fonts are instanced at the requested weight. Static fonts asked for a heavier weight get a synthetic bold (outlines are thickened); a lighter weight than the source is not possible and produces a warning. A variable font whose positioning data cannot be instanced (Segoe UI Variable is one) is used without it and the report says so.
+**3 Forge & save.** The family name, style and output path are prefilled. The forge starts as soon as you arrive, and the result is previewed in the real forged font with a plain summary and a list of sample characters nobody covers. Press **Save to …** to write the file, or **Install for me** to install it for your Windows user account (no admin rights). Any later change marks the result stale and the button reads **Rebuild**.
+
+Menu (⋯ at the top right): Rescan fonts, Add folder… (for fonts that are not installed), Start over.
 
 ## What the result contains
 
-One glyph per character, no unused glyphs, hinting removed, OpenType features (ligatures, kerning, marks) kept per material (legacy `kern` tables are converted to GPOS so they survive), a fresh name table, vertical metrics from the base material, and the file marked installable. The report warns when a source font's licence restricts embedding; check it before distributing a forged font.
+One glyph per character, no unused glyphs, hinting removed, OpenType features (ligatures, kerning, marks) kept per font (legacy `kern` tables are converted to GPOS so they survive), a fresh name table, vertical metrics from the main font, and the file marked installable. The report warns when a source font's licence restricts embedding; check it before distributing a forged font. A variable font whose positioning data cannot be instanced (Segoe UI Variable is one) is used without it and the report says so.
 
 ## Not in this version
 
-Installing the result, producing a whole family in one run, per-language variants of shared CJK characters, glyph editing, cross-font kerning, and colour emoji.
+Producing a whole family in one run, per-language variants of shared CJK characters, glyph editing, cross-font kerning, colour emoji, and installing on macOS/Linux (use Open folder and install by hand).
 
 ## Development
 
@@ -56,4 +46,4 @@ Installing the result, producing a whole family in one run, per-language variant
 .venv\Scripts\python -m pytest -q
 ```
 
-Design spec: `docs/superpowers/specs/2026-09-11-font-playground-design.md`. Implementation plan: `docs/superpowers/plans/2026-09-11-font-playground.md`.
+Design specs: `docs/superpowers/specs/2026-09-11-font-playground-design.md` (engine, catalog) and `docs/superpowers/specs/2026-09-12-workflow-ui-design.md` (UI).
