@@ -29,7 +29,7 @@ The window is one path: **1 Pick fonts → 2 Check → 3 Forge & save**. The mat
 
 **3 Forge & save.** The family name, style and output path are prefilled. The forge starts as soon as you arrive, and the result is previewed in the real forged font with a plain summary and a list of sample characters nobody covers. Press **Save to …** to write the file, or **Install for me** to install it for your Windows user account (no admin rights). Any later change marks the result stale and the button reads **Rebuild**.
 
-Menu (⋯ at the top right): Rescan fonts, Add folder… (for fonts that are not installed), Start over.
+Menu (⋯ at the top right): Rescan fonts, Add folder… (for fonts that are not installed), Start over, and Theme (System, Light or Dark — System follows the Windows "Choose your mode" setting and is the default).
 
 ## What the result contains
 
