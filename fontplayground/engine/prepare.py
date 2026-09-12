@@ -55,8 +55,22 @@ def subset_options() -> Options:
     return o
 
 
+DROPPED_FEATURES = {"locl"}  # per-language variants are out of scope; keeping them adds ~18k glyphs to pan-CJK fonts
+
+
+def kept_features(font: TTFont) -> list[str]:
+    """Every OpenType feature the font has, minus DROPPED_FEATURES (so the closure stays small)."""
+    tags: set[str] = set()
+    for table in ("GSUB", "GPOS"):
+        if table in font and font[table].table.FeatureList:
+            tags |= {r.FeatureTag for r in font[table].table.FeatureList.FeatureRecord}
+    return sorted(tags - DROPPED_FEATURES)
+
+
 def subset_font(font: TTFont, codepoints) -> None:
-    s = Subsetter(subset_options())
+    options = subset_options()
+    options.layout_features = kept_features(font)
+    s = Subsetter(options)
     s.populate(unicodes=sorted(codepoints))
     s.subset(font)
 

@@ -23,7 +23,7 @@ On macOS/Linux use `.venv/bin/pip`.
 
 The window is one path: **1 Pick fonts → 2 Check → 3 Forge & save**. The materials tray at the bottom always shows what you have picked, tells you what your sample text still lacks, and offers one-click suggestions. The button at the bottom right always says what happens next.
 
-**1 Pick fonts.** Search the fonts installed on your computer (scanned once, then cached). Each family shows badges for the scripts it covers, so a font with Han or Kana is easy to spot. Click a family to preview it with your own sample text in any language; characters the font lacks are shown in red. The line under the preview tells you what this font would add to your mix. Press **Add to materials**. The first font you add is the **Main** font: its letters win wherever fonts overlap, and it sets the line spacing.
+**1 Pick fonts.** Search the fonts installed on your computer (scanned once, then cached). Each family shows badges for the scripts it covers, so a font with Han or Kana is easy to spot. Click a family to preview it with your own sample text in any language; characters the font lacks are shown in red. The line under the preview tells you what this font would add to your mix. Press **Add to materials**. The first font you add is the **Main** font: it sets the line spacing and keeps every script it covers reasonably well (at least a tenth of what the fullest font offers), so ordinary text keeps its look; the other fonts fill in the rest. You can change any of that on the Check step.
 
 **2 Check.** One card per font shows what it will supply. On the right, "How the result will look" draws every character of your sample in the font that will actually supply it, before any file exists. "Who supplies what" lists only the scripts your fonts cover, with the automatic choice explained; change it if you disagree. Open **Adjust** on a card to make a font bolder (variable fonts are instanced, static fonts get a synthetic bold) or scale it so it sits well next to the main font.
 
@@ -37,7 +37,7 @@ One glyph per character, no unused glyphs, hinting removed, OpenType features (l
 
 ## Not in this version
 
-Producing a whole family in one run, per-language variants of shared CJK characters, glyph editing, cross-font kerning, colour emoji, and installing on macOS/Linux (use Open folder and install by hand).
+Producing a whole family in one run, per-language variants of shared CJK characters (the `locl` feature is dropped so pan-CJK fonts fit the 65,535-glyph limit), glyph editing, cross-font kerning, colour emoji, and installing on macOS/Linux (use Open folder and install by hand).
 
 ## Development
 
