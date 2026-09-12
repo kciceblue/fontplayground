@@ -71,7 +71,7 @@ class Theme:
             Role.Button: self.surface, Role.ButtonText: self.text,
             Role.ToolTipBase: self.surface, Role.ToolTipText: self.text,
             Role.PlaceholderText: self.muted,
-            Role.Highlight: self.accent, Role.HighlightedText: self.on_accent,
+            Role.Highlight: self.accent, Role.HighlightedText: self.on_accent, Role.Accent: self.accent,
             Role.Link: self.accent, Role.LinkVisited: self.accent,
             Role.Light: self.surface_alt, Role.Midlight: self.border_soft, Role.Mid: self.border,
             Role.Dark: self.border, Role.Shadow: self.border, Role.BrightText: self.on_accent,
@@ -84,6 +84,7 @@ class Theme:
             palette.setColor(Group.Disabled, role, QColor(self.faint))
         palette.setColor(Group.Disabled, Role.Highlight, QColor(self.accent_disabled))
         palette.setColor(Group.Disabled, Role.HighlightedText, QColor(self.accent_disabled_text))
+        palette.setColor(Group.Disabled, Role.Accent, QColor(self.accent_disabled))
         return palette
 
 

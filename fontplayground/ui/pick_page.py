@@ -14,7 +14,7 @@ from bisect import bisect_right
 from collections.abc import Iterable, Sequence
 
 from PySide6.QtCore import Qt, Signal
-from PySide6.QtGui import QBrush, QColor, QPalette
+from PySide6.QtGui import QBrush, QColor
 from PySide6.QtWidgets import (QButtonGroup, QComboBox, QHBoxLayout, QHeaderView, QLabel, QLineEdit, QProgressBar,
                                QPushButton, QSizePolicy, QSplitter, QToolButton, QTreeWidget, QTreeWidgetItem,
                                QVBoxLayout, QWidget)
@@ -80,7 +80,7 @@ QPushButton#addButton { background: $accent; color: $on_accent; border: 1px soli
 QPushButton#addButton:hover { background: $accent_hover; border-color: $accent_hover; }
 QPushButton#addButton:checked { background: $ok_soft; color: $ok; border-color: $ok; }
 QPushButton#addButton:checked:hover { background: $danger_soft; color: $danger; border-color: $danger; }
-QPushButton#addButton:disabled { background: $surface_alt; color: $faint; border-color: $surface_alt; }
+QPushButton#addButton:disabled { background: $surface_alt; color: $muted; border-color: $surface_alt; }
 """
 COVERAGE_CSS = "background: transparent;"   # the coverage label keeps the card's background whatever its tone
 
@@ -710,7 +710,7 @@ class PickPage(QWidget):
         return item
 
     def _grey_out(self, item: QTreeWidgetItem) -> None:
-        grey = QBrush(self.tree.palette().color(QPalette.ColorGroup.Disabled, QPalette.ColorRole.Text))
+        grey = QBrush(QColor(self._theme.muted))   # legible: the row stays selectable, unlike the palette's disabled text
         for col in range(len(COLUMNS)):
             item.setForeground(col, grey)
 

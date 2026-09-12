@@ -42,6 +42,7 @@ QToolButton#chipClose:hover { color: $danger; }
 QPushButton#addButton { border: 1px dashed $faint; border-radius: 13px; background: transparent;
                         color: $text_secondary; padding: 3px 12px; }
 QPushButton#addButton:hover { border-color: $accent; color: $accent; }
+QPushButton#addButton:disabled { color: $faint; border-color: $border_soft; }
 QPushButton#suggest { border: 1px solid $danger_soft_border; border-radius: 10px; background: $danger_soft;
                       color: $danger; padding: 1px 8px; }
 QPushButton#suggest:hover { background: $danger_soft_hover; }
@@ -49,6 +50,7 @@ QLabel#recap { color: $text_secondary; }
 QPushButton#backButton { border: 1px solid $border; border-radius: 6px; background: transparent; padding: 6px 12px;
                          color: $text; }
 QPushButton#backButton:hover { background: $surface_alt; }
+QPushButton#backButton:disabled { color: $faint; border-color: $border_soft; background: transparent; }
 QPushButton#primaryButton { background: $accent; color: $on_accent; border: none; border-radius: 6px;
                             padding: 6px 16px; font-weight: 600; }
 QPushButton#primaryButton[attached="true"] { border-top-right-radius: 0; border-bottom-right-radius: 0; }

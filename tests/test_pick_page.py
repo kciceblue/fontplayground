@@ -2,7 +2,6 @@ from pathlib import Path
 
 import pytest
 from PySide6.QtCore import Qt
-from PySide6.QtGui import QPalette
 
 from fontplayground.catalog.face import FontFace, read_faces
 from fontplayground.catalog.scanner import ScanResult
@@ -11,7 +10,7 @@ from fontplayground.ui.pick_page import (ADD_TEXT, ADDED_TEXT, ADDS_NOTHING_TEXT
                                          LOCKED_TOOLTIP, MIN_COVERED_CHARS, NO_GROUPS_TEXT, PickPage, covered_groups,
                                          default_face, face_info_text, family_badge, family_format, groups_added)
 from fontplayground.ui.preview import PreviewWidget
-from fontplayground.ui.theme import DARK, LIGHT
+from fontplayground.ui.theme import DARK, LIGHT, contrast_ratio
 from tests.fixtures import cps, fake_face
 
 
@@ -363,9 +362,10 @@ def test_unsupported_face_is_greyed_selectable_but_not_addable(page, model):
     row = page.item_for(bad.key)
     assert not row.isDisabled()
     assert row.toolTip(COL_NAME) == "CFF2 outlines are not supported"
-    grey = page.tree.palette().color(QPalette.ColorGroup.Disabled, QPalette.ColorRole.Text)
-    assert row.foreground(COL_NAME).color() == grey and row.foreground(COL_FORMAT).color() == grey
-    assert page.item_for(good.key).foreground(COL_NAME).color() != grey
+    grey = row.foreground(COL_NAME).color().name()
+    assert grey == LIGHT.muted and row.foreground(COL_FORMAT).color().name() == grey
+    assert contrast_ratio(grey, LIGHT.surface) >= 3.0      # greyed, but still readable on the tree
+    assert page.item_for(good.key).foreground(COL_NAME).color().name() != grey
     page.tree.setCurrentItem(row)
     assert page.tree.currentItem() is row and page.current_face() == bad
     assert page.details_label.text().startswith("cff2.otf (face 0)")
@@ -480,6 +480,7 @@ def test_apply_theme_recolours_sheet_coverage_and_tray_marks(page, model, faces)
     assert DARK.danger in page.coverage_label.styleSheet()
     bad = fake_face({0x41}, path="cff2.otf", family="Fixture Z", style="Regular", outline="CFF2")
     page.add_face(bad)
+    grey = page.item_for(bad.key).foreground(COL_NAME).color().name()
+    assert grey == DARK.muted and contrast_ratio(grey, DARK.surface) >= 3.0   # greyed with the theme's muted, not faint
     page.apply_theme(LIGHT)
-    grey = page.tree.palette().color(QPalette.ColorGroup.Disabled, QPalette.ColorRole.Text)
-    assert page.item_for(bad.key).foreground(COL_NAME).color() == grey   # greyed faces are re-greyed from the palette
+    assert page.item_for(bad.key).foreground(COL_NAME).color().name() == LIGHT.muted   # greyed faces are re-greyed

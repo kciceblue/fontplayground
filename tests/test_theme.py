@@ -1,12 +1,14 @@
 import re
 
 import pytest
+from PySide6.QtCore import Qt
 from PySide6.QtGui import QPalette
 from PySide6.QtWidgets import QLabel
 
+import fontplayground.ui.theme as theme_module
 from fontplayground.ui import app, check_page, forge_page, pick_page, rail, tray
 from fontplayground.ui.theme import (DARK, LIGHT, PREFERENCES, Theme, ThemeManager, contrast_ratio, placeholder_html,
-                                     retint, system_theme, tint)
+                                     retint, tint)
 
 THEMES = [LIGHT, DARK]
 TEMPLATES = {
@@ -81,12 +83,14 @@ def test_palette_comes_from_the_tokens(theme: Theme):
         assert p.color(group, Role.PlaceholderText).name() == theme.muted
         assert p.color(group, Role.Highlight).name() == theme.accent
         assert p.color(group, Role.HighlightedText).name() == theme.on_accent
+        assert p.color(group, Role.Accent).name() == theme.accent   # sliders, check marks, focus rings
         assert p.color(group, Role.Link).name() == theme.accent
         assert p.color(group, Role.Mid).name() == theme.border
         assert p.color(group, Role.Dark).name() == theme.border
         assert p.color(group, Role.Light).name() == theme.surface_alt
     for role in (Role.Text, Role.WindowText, Role.ButtonText):
         assert p.color(Group.Disabled, role).name() == theme.faint
+    assert p.color(Group.Disabled, Role.Accent).name() == theme.accent_disabled
 
 
 def test_tint_and_retint(qtbot):
@@ -109,9 +113,25 @@ def test_manager_resolves_each_preference(qapp):
     assert ThemeManager("dark").theme is DARK
     assert qapp.palette().color(QPalette.ColorRole.Base).name() == DARK.surface   # pushed on construction
     m = ThemeManager("system")
-    assert m.preference == "system" and m.theme is system_theme()
+    assert m.preference == "system" and m.theme is LIGHT   # offscreen reports Unknown
     with pytest.raises(ValueError):
         ThemeManager("blue")
+
+
+def test_manager_follows_the_system_only_under_system(qapp, monkeypatch):
+    m = ThemeManager("system")
+    assert m.theme is LIGHT
+    seen: list[Theme] = []
+    m.changed.connect(seen.append)
+    monkeypatch.setattr(theme_module, "system_theme", lambda: DARK)   # _push looks the name up in the module
+    m._on_scheme_changed(Qt.ColorScheme.Dark)          # the platform flipped to dark
+    assert seen == [DARK] and m.theme is DARK
+    assert qapp.palette().color(QPalette.ColorRole.Base).name() == DARK.surface
+    pinned = ThemeManager("light")                      # a pinned preference ignores the flip
+    pinned.changed.connect(seen.append)
+    pinned._on_scheme_changed(Qt.ColorScheme.Dark)
+    assert seen == [DARK] and pinned.theme is LIGHT
+    assert qapp.palette().color(QPalette.ColorRole.Base).name() == LIGHT.surface
 
 
 def test_manager_emits_only_when_the_effective_theme_moves(qapp):

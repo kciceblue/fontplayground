@@ -357,3 +357,23 @@ def test_apply_theme_rerenders_sheet_and_hint(tray, model, faces):
     assert DARK.danger in tray.hint_label.styleSheet()
     dark = MaterialsTray(model, theme=DARK)
     assert DARK.surface in dark.styleSheet()
+
+
+def _inks(button) -> set[str]:
+    image = button.grab().toImage()
+    return {image.pixelColor(x, y).name() for x in range(image.width()) for y in range(image.height())}
+
+
+@pytest.mark.parametrize("theme", [LIGHT, DARK], ids=["light", "dark"])
+def test_disabled_back_and_add_buttons_look_disabled(qtbot, model, theme):
+    """The busy lock disables Back and '+ add'; a sheet `color` applies to every state, so they need a :disabled rule."""
+    tray = MaterialsTray(model, theme=theme)
+    qtbot.addWidget(tray)
+    tray.resize(WIDE, 72)
+    tray.show()
+    assert theme.text in _inks(tray.back_button) and theme.text_secondary in _inks(tray.add_button)
+    tray.back_button.setEnabled(False)
+    tray.add_button.setEnabled(False)
+    back, add = _inks(tray.back_button), _inks(tray.add_button)
+    assert theme.faint in back and theme.text not in back
+    assert theme.faint in add and theme.text_secondary not in add
