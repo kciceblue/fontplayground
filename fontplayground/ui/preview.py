@@ -10,7 +10,7 @@ import html
 from typing import Callable
 
 from PySide6.QtCore import Qt, Signal
-from PySide6.QtGui import QColor, QFont, QFontDatabase, QTextCharFormat, QTextCursor, QTextOption
+from PySide6.QtGui import QColor, QFont, QFontDatabase, QTextBlockFormat, QTextCharFormat, QTextCursor, QTextOption
 from PySide6.QtWidgets import (QHBoxLayout, QLabel, QPlainTextEdit, QScrollArea, QSlider, QSpinBox, QTextBrowser,
                                QVBoxLayout, QWidget)
 
@@ -288,9 +288,12 @@ class PreviewWidget(QWidget):
         doc.setDefaultFont(fallback)
         cursor = QTextCursor(doc)
         missing_brush = QColor(MISSING_COLOR)
+        block_format = QTextBlockFormat()
+        block_format.setAlignment(Qt.AlignmentFlag.AlignLeft)  # RTL lines stay left-aligned like single-font mode
         for line_no, line in enumerate(self.sample_text().split("\n")):
             if line_no:
                 cursor.insertBlock()
+            cursor.setBlockFormat(block_format)
             for key, missing, text in self._runs(line):
                 fmt = QTextCharFormat()
                 fmt.setFont(fonts.get(key, fallback))

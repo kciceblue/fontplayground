@@ -447,6 +447,7 @@ class CheckPage(QWidget):
         self.splitter = QSplitter(Qt.Orientation.Horizontal)
         self.splitter.addWidget(left)
         self.splitter.addWidget(right)
+        left.setMinimumWidth(420)
         self.splitter.setStretchFactor(0, 2)
         self.splitter.setStretchFactor(1, 3)
         self.splitter.setChildrenCollapsible(False)

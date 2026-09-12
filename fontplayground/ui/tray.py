@@ -7,7 +7,7 @@ comes from the ForgeModel; every action goes back through it.
 from __future__ import annotations
 
 from PySide6.QtCore import Qt, QTimer, Signal
-from PySide6.QtGui import QBrush, QColor
+from PySide6.QtGui import QFontMetrics, QBrush, QColor
 from PySide6.QtWidgets import (QAbstractItemView, QFrame, QHBoxLayout, QLabel, QListView, QListWidget, QListWidgetItem,
                                QPushButton, QSizePolicy, QToolButton, QVBoxLayout, QWidget)
 
@@ -235,9 +235,14 @@ class MaterialsTray(QWidget):
                 scripts = ", ".join(LABELS.get(g, g) for g in face.scripts) or "no characters"
                 chip = Chip(face.key, item.text(), i == 0, f"{face.display_name}\nCovers: {scripts}")
                 chip.removeClicked.connect(self.model.remove)
-                item.setSizeHint(chip.sizeHint())
                 self.list.addItem(item)
                 self.list.setItemWidget(item, chip)
+                chip.ensurePolished()
+                chip.label.ensurePolished()
+                text_width = QFontMetrics(chip.label.font()).horizontalAdvance(chip.label.text())
+                hint = chip.sizeHint()
+                hint.setWidth(max(hint.width(), text_width + chip.close_button.sizeHint().width() + 28))
+                item.setSizeHint(hint)
         finally:
             self.list.blockSignals(False)
 
