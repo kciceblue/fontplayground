@@ -254,6 +254,7 @@ class MaterialsTray(QWidget):
     def _refresh_hint(self) -> None:
         for button in self.suggestion_buttons():
             self.suggestions_layout.removeWidget(button)
+            button.hide()  # gone from view at once; deletion happens on the next event-loop pass
             button.deleteLater()
         self.hint_label.setToolTip("")
         if not self.model.rows:

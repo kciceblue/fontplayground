@@ -289,7 +289,7 @@ class PreviewWidget(QWidget):
         cursor = QTextCursor(doc)
         missing_brush = QColor(MISSING_COLOR)
         block_format = QTextBlockFormat()
-        block_format.setAlignment(Qt.AlignmentFlag.AlignLeft)  # RTL lines stay left-aligned like single-font mode
+        block_format.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignAbsolute)  # RTL lines stay on the left too
         for line_no, line in enumerate(self.sample_text().split("\n")):
             if line_no:
                 cursor.insertBlock()
