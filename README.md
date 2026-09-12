@@ -4,7 +4,7 @@ A small desktop app for people who find FontForge too much. Pick a couple of ins
 
 ## Install
 
-Requires Python 3.10 or newer.
+Requires Python 3.10 or newer; the dependencies (PySide6 6.8+, fontTools, skia-pathops) are installed by pip. Developed and tested on Windows 11. It runs on macOS and Linux too, but **Install for me** is Windows-only and the automatic theme following is untested there.
 
 ```bash
 python -m venv .venv
@@ -29,7 +29,7 @@ The window is one path: **1 Pick fonts → 2 Check → 3 Forge & save**. The mat
 
 **3 Forge & save.** The family name, style and output path are prefilled. The forge starts as soon as you arrive, and the result is previewed in the real forged font with a plain summary and a list of sample characters nobody covers. Press **Save to …** to write the file, or **Install for me** to install it for your Windows user account (no admin rights). Any later change marks the result stale and the button reads **Rebuild**.
 
-Menu (⋯ at the top right): Rescan fonts, Add folder… (for fonts that are not installed), Start over, and Theme (System, Light or Dark — System follows the Windows "Choose your mode" setting and is the default).
+Menu (⋯ at the top right): Rescan fonts, Add folder… (for fonts that are not installed), Start over, Theme (System, Light or Dark — System follows the Windows "Choose your mode" setting and is the default), and Open settings folder.
 
 ## What the result contains
 
@@ -46,4 +46,12 @@ Producing a whole family in one run, per-language variants of shared CJK charact
 .venv\Scripts\python -m pytest -q
 ```
 
-Design specs: `docs/superpowers/specs/2026-09-11-font-playground-design.md` (engine, catalog) and `docs/superpowers/specs/2026-09-12-workflow-ui-design.md` (UI).
+On Windows, two tests in `tests/test_install.py` briefly install a fixture font for the current user and remove it again.
+
+Design specs: `docs/superpowers/specs/2026-09-11-font-playground-design.md` (engine, catalog), `docs/superpowers/specs/2026-09-12-workflow-ui-design.md` (UI) and `docs/superpowers/specs/2026-09-12-theme-design.md` (light/dark theme). The files under `docs/superpowers/plans` are the step-by-step implementation plans those specs were built from, kept as a record.
+
+## Licence
+
+Font Playground is released under the MIT License (see `LICENSE`). `cff_to_glyf` in `fontplayground/engine/prepare.py` is adapted from fontTools' `Snippets/otf2ttf.py` (Copyright (c) 2017 Just van Rossum, MIT). The dependencies are installed from PyPI and are not part of this repository: fontTools (MIT), skia-pathops (BSD-3-Clause), unicodedata2 (Apache-2.0) and PySide6 / Qt for Python (LGPL v3); if you redistribute a bundled build, include the Qt LGPL notices.
+
+The fonts you forge keep their own licences: the report warns when a source font restricts embedding, and it is on you to check the source licences before distributing a forged font.

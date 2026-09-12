@@ -76,7 +76,11 @@ def subset_font(font: TTFont, codepoints) -> None:
 
 
 def cff_to_glyf(font: TTFont) -> None:
-    """Replace CFF outlines with TrueType quadratic outlines (fontTools otf2ttf recipe)."""
+    """Replace CFF outlines with TrueType quadratic outlines.
+
+    Adapted from fontTools Snippets/otf2ttf.py, Copyright (c) 2017 Just van Rossum, MIT License
+    (https://github.com/fonttools/fonttools/blob/main/Snippets/otf2ttf.py).
+    """
     upem = font["head"].unitsPerEm
     glyph_set = font.getGlyphSet()
     order = font.getGlyphOrder()

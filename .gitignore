@@ -7,3 +7,11 @@ dist/
 build/
 .pytest_cache/
 run.bat
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+.claude/
+*.log
+.coverage
+htmlcov/

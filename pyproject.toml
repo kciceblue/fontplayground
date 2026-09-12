@@ -6,11 +6,14 @@ build-backend = "setuptools.build_meta"
 name = "fontplayground"
 version = "0.1.0"
 description = "Browse, preview and forge fonts into one file"
+readme = "README.md"
+license = {text = "MIT"}
+authors = [{name = "kciceblue"}]
 requires-python = ">=3.10"
 dependencies = [
   "fonttools[unicode]>=4.65",
   "skia-pathops>=0.9",
-  "PySide6>=6.7",
+  "PySide6>=6.8",   # QStyleHints.setColorScheme (theme following) arrived in Qt 6.8
 ]
 
 [project.optional-dependencies]
