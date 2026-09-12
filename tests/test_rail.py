@@ -1,6 +1,8 @@
+import pytest
 from PySide6.QtCore import Qt
 
 from fontplayground.ui.rail import STEP_SUBTITLES, STEP_TITLES, StepRail, done_title
+from fontplayground.ui.theme import DARK, LIGHT
 
 
 def _rail(qtbot) -> StepRail:
@@ -69,7 +71,7 @@ def test_clicking_a_reachable_step_moves_and_emits(qtbot):
 def test_overflow_menu_actions(qtbot):
     rail = _rail(qtbot)
     assert rail.menu_button.text() == "⋯" and rail.menu_button.menu() is rail.menu
-    actions = [a for a in rail.menu.actions() if not a.isSeparator()]
+    actions = [a for a in rail.menu.actions() if not a.isSeparator() and a.menu() is None]   # plain entries
     assert actions == [rail.rescan_action, rail.add_folder_action, rail.start_over_action, rail.open_settings_action]
     assert [a.text() for a in actions] == ["Rescan fonts", "Add folder…", "Start over", "Open settings folder"]
     with qtbot.waitSignal(rail.rescan_action.triggered, timeout=1000):
@@ -84,3 +86,30 @@ def test_overflow_button_never_takes_focus(qtbot):
     assert [b.focusPolicy() for b in rail.buttons] == [Qt.FocusPolicy.NoFocus] * 3   # the step buttons keep theirs
     rail.menu_button.setFocus()
     assert not rail.menu_button.hasFocus()
+
+
+def test_theme_submenu_offers_three_exclusive_choices(qtbot):
+    rail = _rail(qtbot)
+    assert list(rail.theme_actions) == ["system", "light", "dark"]
+    assert [a.text() for a in rail.theme_actions.values()] == ["System", "Light", "Dark"]
+    assert rail.theme_group.isExclusive()
+    assert rail.theme_actions["system"].isChecked()
+    assert rail.theme_menu.menuAction() in rail.menu.actions()   # the submenu hangs off the ⋯ menu
+    chosen: list[str] = []
+    rail.themeChosen.connect(chosen.append)
+    rail.theme_actions["dark"].trigger()
+    assert chosen == ["dark"] and rail.theme_actions["dark"].isChecked() and not rail.theme_actions["system"].isChecked()
+    rail.set_theme_preference("light")
+    assert rail.theme_actions["light"].isChecked() and chosen == ["dark"]   # programmatic: no signal
+    with pytest.raises(ValueError):
+        rail.set_theme_preference("blue")
+
+
+def test_apply_theme_rerenders_the_stylesheet(qtbot):
+    rail = _rail(qtbot)
+    assert LIGHT.surface in rail.styleSheet() and "$" not in rail.styleSheet()
+    rail.apply_theme(DARK)
+    assert DARK.surface in rail.styleSheet() and LIGHT.surface not in rail.styleSheet()
+    dark = StepRail(theme=DARK)
+    qtbot.addWidget(dark)
+    assert DARK.accent in dark.styleSheet()

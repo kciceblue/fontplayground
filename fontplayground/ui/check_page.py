@@ -22,7 +22,8 @@ from fontplayground.engine.scripts import GROUP_IDS, GROUPS, LABELS, group_of
 from fontplayground.engine.spec import Plan
 from fontplayground.ui import smart
 from fontplayground.ui.model import ForgeModel, MaterialRow
-from fontplayground.ui.preview import MISSING_COLOR, PreviewWidget, default_wght, make_font
+from fontplayground.ui.preview import PreviewWidget, default_wght, make_font
+from fontplayground.ui.theme import LIGHT, Theme
 
 FaceKey = tuple[str, int]
 
@@ -45,35 +46,36 @@ TABLE_COLUMNS = ["Script", "Supplied by", "Characters"]
 COL_SCRIPT, COL_SUPPLIER, COL_COUNTS = range(3)
 SHOW_ALL_TEXT = f"Show all {len(GROUPS)} scripts"
 SHOW_COVERED_TEXT = "Show only covered scripts"
-MUTED_COLOR = "#777777"
 
 STYLE = """
-QFrame#card { background: #ffffff; border: 1px solid #e3e3e3; border-radius: 8px; }
-QFrame#placeholder { background: #ffffff; border: 1px dashed #c8d0dc; border-radius: 8px; }
-QLabel#placeholderText { color: #777777; }
-QLabel#rank { background: #eef1f5; color: #4b5563; border-radius: 6px; padding: 1px 7px; font-weight: 600; }
-QLabel#rank[main="true"] { background: #1a6bd8; color: #ffffff; }
-QLabel#baseBadge { background: #e8f3ec; color: #2f8f46; border: 1px solid #bfe0c8; border-radius: 6px;
+QFrame#card { background: $surface; border: 1px solid $border_soft; border-radius: 8px; }
+QFrame#placeholder { background: $surface; border: 1px dashed $border; border-radius: 8px; }
+QLabel#placeholderText { color: $muted; }
+QLabel#rank { background: $surface_alt; color: $text_secondary; border-radius: 6px; padding: 1px 7px; font-weight: 600; }
+QLabel#rank[main="true"] { background: $accent; color: $on_accent; }
+QLabel#baseBadge { background: $ok_soft; color: $ok; border: 1px solid $ok_soft_border; border-radius: 6px;
                    padding: 0 6px; font-size: 11px; }
-QLabel#nothingBadge { background: #fff5f5; color: #b3261e; border: 1px solid #f0b4b4; border-radius: 6px;
-                      padding: 1px 6px; font-size: 11px; }
-QLabel#plan { color: #777777; }
-QLabel#sectionTitle { font-weight: 600; font-size: 14px; color: #1f2933; }
-QLabel#missing { color: #b3261e; }
-QLabel#glyphWarning { background: #fff6e0; border: 1px solid #f2c94c; border-radius: 6px; padding: 6px 10px;
-                      color: #7a4b00; }
-QLabel#fieldLabel { color: #4b5563; }
+QLabel#nothingBadge { background: $danger_soft; color: $danger; border: 1px solid $danger_soft_border;
+                      border-radius: 6px; padding: 1px 6px; font-size: 11px; }
+QLabel#plan { color: $muted; }
+QLabel#sectionTitle { font-weight: 600; font-size: 14px; color: $text; }
+QLabel#missing { color: $danger; }
+QLabel#glyphWarning { background: $warn_soft; border: 1px solid $warn_border; border-radius: 6px; padding: 6px 10px;
+                      color: $warn_text; }
+QLabel#fieldLabel { color: $text_secondary; }
 QTextEdit#sample { background: transparent; border: none; }
-QToolButton#move { border: 1px solid #d3dae6; border-radius: 6px; background: #ffffff; padding: 0 5px; color: #4b5563; }
-QToolButton#move:hover { border-color: #1a6bd8; color: #1a6bd8; }
-QToolButton#move:disabled { color: #c4c4c4; border-color: #eeeeee; }
-QToolButton#disclosure { border: none; background: transparent; color: #1a6bd8; padding: 2px 0; }
-QToolButton#disclosure:hover { color: #144f9f; }
-QTableWidget#suppliers { background: #ffffff; border: 1px solid #e3e3e3; border-radius: 6px; gridline-color: #eeeeee; }
-QPushButton#showAll { border: 1px solid #c8d0dc; border-radius: 6px; background: transparent; padding: 4px 10px;
-                      color: #4b5563; }
-QPushButton#showAll:hover { border-color: #1a6bd8; color: #1a6bd8; }
-QPushButton#showAll:checked { border-color: #1a6bd8; color: #1a6bd8; }
+QToolButton#move { border: 1px solid $border; border-radius: 6px; background: $surface; padding: 0 5px;
+                   color: $text_secondary; }
+QToolButton#move:hover { border-color: $accent; color: $accent; }
+QToolButton#move:disabled { color: $faint; border-color: $border_soft; }
+QToolButton#disclosure { border: none; background: transparent; color: $accent; padding: 2px 0; }
+QToolButton#disclosure:hover { color: $accent_hover; }
+QTableWidget#suppliers { background: $surface; border: 1px solid $border_soft; border-radius: 6px;
+                         gridline-color: $border_soft; }
+QPushButton#showAll { border: 1px solid $border; border-radius: 6px; background: transparent; padding: 4px 10px;
+                      color: $text_secondary; }
+QPushButton#showAll:hover { border-color: $accent; color: $accent; }
+QPushButton#showAll:checked { border-color: $accent; color: $accent; }
 """
 
 
@@ -150,8 +152,8 @@ def sample_wght(face: FontFace, weight: int | None) -> float | None:
 
 
 def render_sample(edit: QTextEdit, face: FontFace, text: str = SAMPLE_LINE, size: int = SAMPLE_PT,
-                  wght: float | None = None) -> None:
-    """Fill `edit` with `text` in the face's own font; characters the face lacks get the missing background.
+                  wght: float | None = None, missing_color: str = LIGHT.missing) -> None:
+    """Fill `edit` with `text` in the face's own font; characters the face lacks get `missing_color` behind them.
 
     `wght` (variable fonts): the weight-axis value to draw at, the axis default when None.
     """
@@ -164,7 +166,7 @@ def render_sample(edit: QTextEdit, face: FontFace, text: str = SAMPLE_LINE, size
     plain.setFont(font)
     missing = QTextCharFormat()
     missing.setFont(font)
-    missing.setBackground(QBrush(QColor(MISSING_COLOR)))
+    missing.setBackground(QBrush(QColor(missing_color)))
     cursor = QTextCursor(doc)
     for ch in text:
         lacking = not ch.isspace() and ord(ch) not in face.codepoints
@@ -177,10 +179,10 @@ def _restyle(widget: QWidget) -> None:
     widget.style().polish(widget)
 
 
-def _muted_item(text: str) -> QTableWidgetItem:
+def _muted_item(text: str, color: str) -> QTableWidgetItem:
     item = QTableWidgetItem(text)
     item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)
-    item.setForeground(QBrush(QColor(MUTED_COLOR)))
+    item.setForeground(QBrush(QColor(color)))
     return item
 
 
@@ -219,11 +221,12 @@ class MaterialCard(QFrame):
     adjustChanged = Signal(object, object, object)  # key, weight | None, scale | None
 
     def __init__(self, row: MaterialRow, rank: int, count: int, is_base: bool,
-                 parent: QWidget | None = None, default_weight: int | None = None) -> None:
+                 parent: QWidget | None = None, default_weight: int | None = None, theme: Theme = LIGHT) -> None:
         super().__init__(parent)
         self.key: FaceKey = row.face.key
         self.face: FontFace = row.face
         self._locked = False
+        self._theme = theme
         self._can_move = (False, False)                  # (up, down) by rank; the lock overrides both
         effective = row.weight if row.weight is not None else default_weight
         self._shown_wght: float | None = sample_wght(row.face, effective)   # what the sample line is drawn at
@@ -276,7 +279,7 @@ class MaterialCard(QFrame):
         self.sample.setTextInteractionFlags(Qt.TextInteractionFlag.NoTextInteraction)
         self.sample.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         self.sample.setToolTip("Drawn in this font. Red: a character this font cannot draw.")
-        render_sample(self.sample, row.face, wght=self._shown_wght)
+        render_sample(self.sample, row.face, wght=self._shown_wght, missing_color=self._theme.missing)
         layout.addWidget(self.sample)
 
         self.plan_label = QLabel(PENDING_TEXT)
@@ -336,7 +339,7 @@ class MaterialCard(QFrame):
         if row.face is not self.face or wght != self._shown_wght:
             self.face = row.face
             self._shown_wght = wght
-            render_sample(self.sample, row.face, wght=wght)
+            render_sample(self.sample, row.face, wght=wght, missing_color=self._theme.missing)
         self.name_label.setText(row.face.display_name)
         self.name_label.setToolTip(f"{row.face.display_name}\n{row.face.path} (face {row.face.index})")
         self.rank_badge.setText(rank_text(rank))
@@ -401,6 +404,10 @@ class MaterialCard(QFrame):
             self.plan_label.show()
             self.nothing_badge.hide()
 
+    def apply_theme(self, theme: Theme) -> None:
+        self._theme = theme
+        render_sample(self.sample, self.face, wght=self._shown_wght, missing_color=theme.missing)
+
     # ----- card -> model -----
     def weight(self) -> int | None:
         return choice_weight(self.weight_combo.currentText())
@@ -416,7 +423,8 @@ class MaterialCard(QFrame):
 class CheckPage(QWidget):
     """Step 2: material cards and Advanced on the left; composite preview, missing characters and the table right."""
 
-    def __init__(self, model: ForgeModel, preview: PreviewWidget, parent: QWidget | None = None) -> None:
+    def __init__(self, model: ForgeModel, preview: PreviewWidget, parent: QWidget | None = None,
+                 theme: Theme = LIGHT) -> None:
         super().__init__(parent)
         self.model = model
         self.preview = preview
@@ -424,7 +432,8 @@ class CheckPage(QWidget):
         self._table_groups: list[str] = []
         self._locked = False
         self.setObjectName("checkPage")
-        self.setStyleSheet(STYLE)
+        self._theme = theme
+        self.setStyleSheet(theme.render(STYLE))   # cards and the table come below, built in this theme by refresh()
 
         # ----- left pane: cards + Advanced, in a scroll area -----
         left = QWidget()
@@ -550,6 +559,14 @@ class CheckPage(QWidget):
         self._on_materials_changed()
         self._on_plan_changed(self.model.plan)
 
+    def apply_theme(self, theme: Theme) -> None:
+        """Re-render the sheet, every card's sample line and the table in `theme`."""
+        self._theme = theme
+        self.setStyleSheet(theme.render(STYLE))
+        for card in self.cards:
+            card.apply_theme(theme)
+        self._rebuild_table()
+
     def table_groups(self) -> list[str]:
         """Group ids listed in the table, top to bottom."""
         return list(self._table_groups)
@@ -632,7 +649,7 @@ class CheckPage(QWidget):
         default_weight = self.model.default_weight
         first = self.cards_layout.indexOf(self.placeholder) + 1
         for i, row in enumerate(rows):
-            card = MaterialCard(row, i, len(rows), i == base, default_weight=default_weight)
+            card = MaterialCard(row, i, len(rows), i == base, default_weight=default_weight, theme=self._theme)
             card.set_locked(self._locked)
             card.moveRequested.connect(self._on_move_requested)
             card.adjustChanged.connect(self._on_adjust_changed)
@@ -698,8 +715,8 @@ class CheckPage(QWidget):
         for r, g in enumerate(shown):
             self.table.setItem(r, COL_SCRIPT, _plain_item(LABELS[g]))
             if g not in covered:
-                self.table.setItem(r, COL_SUPPLIER, _muted_item(NOBODY))
-                self.table.setItem(r, COL_COUNTS, _muted_item(NO_COUNT))
+                self.table.setItem(r, COL_SUPPLIER, _muted_item(NOBODY, self._theme.muted))
+                self.table.setItem(r, COL_COUNTS, _muted_item(NO_COUNT, self._theme.muted))
                 continue
             auto_key = smart.smart_supplier(g, counts, keys)
             combo = QComboBox()

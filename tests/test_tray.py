@@ -7,6 +7,7 @@ from fontplayground.catalog.face import read_faces
 from fontplayground.ui.model import ForgeModel
 from fontplayground.ui.tray import (MAX_HEIGHT, MAX_PRIMARY_CHARS, MIN_HEIGHT, PRIMARY_MIN_WIDTH, SUGGESTION_MIN_WIDTHS, Chip,
                                     MaterialsTray, chip_label, elide_middle)
+from fontplayground.ui.theme import DARK, LIGHT
 from tests.fixtures import cps, fake_face
 
 WIDE = 1600   # room for every label at the offscreen platform's (wide) font metrics
@@ -129,14 +130,14 @@ def test_hint_shows_missing_chars_with_suggestion_buttons(qtbot, tray, model, fa
     model.add(a)
     assert tray.hint_label.text() == "Your sample still needs: →"
     assert tray.hint_label.toolTip() == ""            # nothing hidden: no tooltip
-    assert "#b91c1c" in tray.hint_label.styleSheet()
+    assert LIGHT.danger in tray.hint_label.styleSheet()
     buttons = tray.suggestion_buttons()
     assert [x.text() for x in buttons] == ["Add Fixture C"]
     assert buttons[0].toolTip() == "Add Fixture C Regular to your materials"
     buttons[0].click()
     assert model.keys() == [a.key, c.key]
     assert tray.hint_label.text() == "Your sample is fully covered."
-    assert "#15803d" in tray.hint_label.styleSheet() and tray.suggestion_buttons() == []
+    assert LIGHT.ok in tray.hint_label.styleSheet() and tray.suggestion_buttons() == []
     assert tray.suggestions_box.isHidden()
 
     model.set_sample_text("ab →漢")  # the sample changed: the hint follows without a materials change
@@ -342,3 +343,17 @@ def test_primary_menu_button_appears_with_a_menu(qtbot, tray):
     tray.set_primary_menu(None)
     assert button.isHidden() and button.menu() is None
     assert tray.primary_button.property("attached") is False
+
+
+def test_apply_theme_rerenders_sheet_and_hint(tray, model, faces):
+    assert LIGHT.accent in tray.styleSheet() and LIGHT.text_secondary in tray.hint_label.styleSheet()
+    tray.apply_theme(DARK)
+    assert DARK.accent in tray.styleSheet() and LIGHT.accent not in tray.styleSheet()
+    assert DARK.text_secondary in tray.hint_label.styleSheet()   # "Pick a font to begin." keeps its tone
+    a, b, c = faces
+    model.set_catalog({f.key: f for f in (a, b, c)})
+    model.set_sample_text("ab →")
+    model.add(a)
+    assert DARK.danger in tray.hint_label.styleSheet()
+    dark = MaterialsTray(model, theme=DARK)
+    assert DARK.surface in dark.styleSheet()

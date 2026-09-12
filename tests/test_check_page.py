@@ -15,7 +15,8 @@ from fontplayground.ui.check_page import (ADDS_NOTHING_TEXT, ADJUST_TEXT, AS_IS,
                                           SHOW_COVERED_TEXT, WEIGHT_CHOICES, CheckPage, MaterialCard, adjust_title,
                                           plan_line, sample_wght, short_names)
 from fontplayground.ui.model import ForgeModel, MaterialRow
-from fontplayground.ui.preview import MISSING_COLOR, PreviewWidget
+from fontplayground.ui.preview import PreviewWidget
+from fontplayground.ui.theme import DARK, LIGHT
 from tests.fixtures import cps, fake_face
 
 # one character per script group, in GROUPS order (Ethiopic ሀ falls into "Everything else")
@@ -80,8 +81,8 @@ def _fragments(doc):
     return out
 
 
-def _red_chars(doc) -> set[str]:
-    return {ch for text, _, _, colour in _fragments(doc) if colour == MISSING_COLOR for ch in text}
+def _red_chars(doc, colour: str = LIGHT.missing) -> set[str]:
+    return {ch for text, _, _, c in _fragments(doc) if c == colour for ch in text}
 
 
 def _cleanup_result(model: ForgeModel) -> None:
@@ -553,3 +554,18 @@ def test_lock_with_no_fonts_keeps_the_base_combo_off(qtbot, model):
     page.set_locked(False)
     assert not page.base_combo.isEnabled()                       # no rows: nothing to choose from
     assert page.default_weight_combo.isEnabled() and page.default_scale_spin.isEnabled()
+
+
+def test_apply_theme_recolours_cards_table_and_sheet(qtbot, page_ab, model):
+    page = page_ab
+    card = page.cards[0]                       # A lacks 漢 and more: its sample has red characters
+    assert _red_chars(card.sample.document()) and LIGHT.surface in page.styleSheet()
+    page.apply_theme(DARK)
+    # LIGHT.surface is no sentinel here: DARK.on_accent is the same white and the Main badge uses it
+    assert DARK.surface in page.styleSheet() and LIGHT.accent not in page.styleSheet()
+    assert _red_chars(card.sample.document(), DARK.missing) and not _red_chars(card.sample.document())
+    page.show_all_button.setChecked(True)      # uncovered rows are the muted ones
+    row = page.table_row("arabic")
+    assert page.table.item(row, 1).foreground().color().name() == DARK.muted
+    model.add(model.catalog[next(k for k in model.catalog if k not in model.keys())])
+    assert page.cards[-1]._theme is DARK       # cards built after the switch get the current theme

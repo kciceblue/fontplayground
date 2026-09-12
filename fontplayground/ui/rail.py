@@ -2,9 +2,11 @@
 from __future__ import annotations
 
 from PySide6.QtCore import Qt, Signal
-from PySide6.QtGui import QAction
+from PySide6.QtGui import QAction, QActionGroup
 from PySide6.QtWidgets import (QButtonGroup, QHBoxLayout, QLabel, QMenu, QStackedWidget, QToolButton, QVBoxLayout,
                                QWidget)
+
+from fontplayground.ui.theme import LIGHT, PREFERENCES, Theme
 
 STEP_TITLES = ("1  Pick fonts", "2  Check", "3  Forge & save")
 STEP_SUBTITLES = (
@@ -14,19 +16,20 @@ STEP_SUBTITLES = (
 )
 DONE_MARK = "✓ "
 SEPARATOR = "›"
+THEME_LABELS = {"system": "System", "light": "Light", "dark": "Dark"}   # menu text per preference
 
 STYLE = """
-QWidget#rail { background: #ffffff; border-bottom: 1px solid #e3e3e3; }
+QWidget#rail { background: $surface; border-bottom: 1px solid $border_soft; }
 QToolButton#step { background: transparent; border: none; border-bottom: 3px solid transparent;
-                   color: #8a8a8a; font-size: 14px; padding: 6px 14px; }
-QToolButton#step:hover { color: #444444; }
-QToolButton#step[done="true"] { color: #2f8f46; }
-QToolButton#step:disabled { color: #c4c4c4; }
-QToolButton#step:checked { color: #1a6bd8; font-weight: 600; border-bottom: 3px solid #1a6bd8; }
-QLabel#separator { color: #b0b0b0; font-size: 14px; padding: 6px 0; }
-QLabel#subtitle { color: #666666; font-size: 12px; padding: 0 14px 6px 14px; }
+                   color: $muted; font-size: 14px; padding: 6px 14px; }
+QToolButton#step:hover { color: $text_secondary; }
+QToolButton#step[done="true"] { color: $ok; }
+QToolButton#step:disabled { color: $faint; }
+QToolButton#step:checked { color: $accent; font-weight: 600; border-bottom: 3px solid $accent; }
+QLabel#separator { color: $faint; font-size: 14px; padding: 6px 0; }
+QLabel#subtitle { color: $muted; font-size: 12px; padding: 0 14px 6px 14px; }
 QToolButton#overflow { background: transparent; border: none; border-radius: 4px; font-size: 16px; padding: 2px 8px; }
-QToolButton#overflow:hover { background: #f0f0f0; }
+QToolButton#overflow:hover { background: $surface_alt; }
 QToolButton#overflow::menu-indicator { image: none; }
 """
 
@@ -44,12 +47,14 @@ def button_text(title: str) -> str:
 
 class StepRail(QWidget):
     stepClicked = Signal(int)   # 0-based; only for reachable steps
+    themeChosen = Signal(str)   # "system" | "light" | "dark", when the user picks one in the ⋯ menu
 
-    def __init__(self, parent: QWidget | None = None) -> None:
+    def __init__(self, parent: QWidget | None = None, theme: Theme = LIGHT) -> None:
         super().__init__(parent)
         self.setObjectName("rail")
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
-        self.setStyleSheet(STYLE)
+        self._theme = theme
+        self.apply_theme(theme)
         self._step = 0
         self._reachable = [True] + [False] * (len(STEP_TITLES) - 1)
 
@@ -92,11 +97,25 @@ class StepRail(QWidget):
         self.add_folder_action = QAction("Add folder…", self)
         self.start_over_action = QAction("Start over", self)
         self.open_settings_action = QAction("Open settings folder", self)
+        self.theme_menu = QMenu("Theme", self.menu)
+        self.theme_group = QActionGroup(self)
+        self.theme_group.setExclusive(True)
+        self.theme_actions: dict[str, QAction] = {}
+        for preference in PREFERENCES:
+            action = QAction(THEME_LABELS[preference], self)
+            action.setCheckable(True)
+            action.setData(preference)
+            self.theme_group.addAction(action)
+            self.theme_menu.addAction(action)
+            self.theme_actions[preference] = action
+        self.theme_actions["system"].setChecked(True)
+        self.theme_group.triggered.connect(lambda action: self.themeChosen.emit(action.data()))
         self.menu.addAction(self.rescan_action)
         self.menu.addAction(self.add_folder_action)
         self.menu.addSeparator()
         self.menu.addAction(self.start_over_action)
         self.menu.addSeparator()
+        self.menu.addMenu(self.theme_menu)
         self.menu.addAction(self.open_settings_action)
         self.menu_button.setMenu(self.menu)
         row.addWidget(self.menu_button, 0, Qt.AlignmentFlag.AlignVCenter)
@@ -142,6 +161,16 @@ class StepRail(QWidget):
 
     def subtitle(self) -> str:
         return self.subtitles[self._step].text()
+
+    def set_theme_preference(self, preference: str) -> None:
+        """Check the Theme entry for `preference` without emitting themeChosen (the stored choice on start)."""
+        if preference not in self.theme_actions:
+            raise ValueError(f"Unknown theme preference {preference!r}")
+        self.theme_actions[preference].setChecked(True)
+
+    def apply_theme(self, theme: Theme) -> None:
+        self._theme = theme
+        self.setStyleSheet(theme.render(STYLE))
 
     # ----- internals -----
     def _on_clicked(self, index: int) -> None:

@@ -11,6 +11,7 @@ from fontplayground.ui.pick_page import (ADD_TEXT, ADDED_TEXT, ADDS_NOTHING_TEXT
                                          LOCKED_TOOLTIP, MIN_COVERED_CHARS, NO_GROUPS_TEXT, PickPage, covered_groups,
                                          default_face, face_info_text, family_badge, family_format, groups_added)
 from fontplayground.ui.preview import PreviewWidget
+from fontplayground.ui.theme import DARK, LIGHT
 from tests.fixtures import cps, fake_face
 
 
@@ -460,3 +461,25 @@ def test_rescan_keeps_the_filter_and_restores_the_previewed_face(page, faces):
             page.add_face(f)
     page.end_scan(ScanResult(faces=[f for f in faces if f.key != b.key]))
     assert page.current_face() is None and page.visible_families() == []
+
+
+def test_apply_theme_recolours_sheet_coverage_and_tray_marks(page, model, faces):
+    fa = face_at(faces, "A.ttf")
+    model.set_sample_text("c → 字")
+    page.select_face(fa.key)
+    assert LIGHT.danger in page.coverage_label.styleSheet() and LIGHT.surface in page.styleSheet()
+    model.add(fa)
+    assert page.family_item("Fixture A").foreground(COL_FORMAT).color().name() == LIGHT.ok
+    page.apply_theme(DARK)
+    # LIGHT.window rather than LIGHT.surface: the latter (#ffffff) is also DARK.on_accent, drawn on the add button
+    assert DARK.surface in page.styleSheet() and LIGHT.window not in page.styleSheet()
+    assert DARK.ok in page.coverage_label.styleSheet()       # "In your materials" is re-tinted for dark
+    assert page.family_item("Fixture A").foreground(COL_FORMAT).color().name() == DARK.ok
+    assert page.family_item("Fixture B").data(COL_FORMAT, Qt.ItemDataRole.ForegroundRole) is None
+    model.remove(fa.key)
+    assert DARK.danger in page.coverage_label.styleSheet()
+    bad = fake_face({0x41}, path="cff2.otf", family="Fixture Z", style="Regular", outline="CFF2")
+    page.add_face(bad)
+    page.apply_theme(LIGHT)
+    grey = page.tree.palette().color(QPalette.ColorGroup.Disabled, QPalette.ColorRole.Text)
+    assert page.item_for(bad.key).foreground(COL_NAME).color() == grey   # greyed faces are re-greyed from the palette

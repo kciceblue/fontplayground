@@ -15,6 +15,7 @@ from fontplayground.ui.forge_page import (HINT_ARRIVE, HINT_CANCELLED, HINT_STAL
                                           short_path, summary_sentence, supplied_text)
 from fontplayground.ui.model import ForgeModel
 from fontplayground.ui.preview import PreviewWidget
+from fontplayground.ui.theme import DARK, LIGHT
 from tests.fixtures import cps, fake_face
 
 FAMILY = "Fixture A Fixture B"
@@ -543,3 +544,13 @@ def test_primary_state_changed_fires_only_when_the_tuple_changes(qtbot, page, mo
     assert len(seen) == 5
     model.set_family("")
     assert seen[-1] == ("Rebuild", False) and len(seen) == 6
+
+
+def test_apply_theme_rerenders_sheet_and_relabels(qtbot, page, model):
+    assert LIGHT.surface in page.styleSheet() and LIGHT.muted in page.hint_label.styleSheet()
+    page.apply_theme(DARK)
+    assert DARK.surface in page.styleSheet() and LIGHT.surface not in page.styleSheet()
+    assert DARK.muted in page.hint_label.styleSheet()
+    assert DARK.ok in page.saved_label.styleSheet()          # its resting tone is "ok"
+    model.set_family("", by_user=True)                       # invalid spec: the hint turns to danger
+    assert model.validity() and DARK.danger in page.hint_label.styleSheet()

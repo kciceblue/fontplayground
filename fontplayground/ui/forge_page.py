@@ -27,6 +27,7 @@ from fontplayground.engine.spec import MaterialReport, Plan
 from fontplayground.ui import install
 from fontplayground.ui.model import ForgeModel
 from fontplayground.ui.preview import PreviewWidget
+from fontplayground.ui.theme import LIGHT, Theme, retint, tint
 
 FaceKey = tuple[str, int]
 Tally = dict[str, int]        # group id -> characters a material supplied in that group
@@ -55,31 +56,30 @@ NOT_INSTALLED_TEXT = "That font was no longer installed."
 LABEL_FORGING, LABEL_REBUILD, LABEL_SAVED = "Forging…", "Rebuild", "Saved ✓"
 ACTION_FORGING, ACTION_REBUILD, ACTION_SAVE, ACTION_OPEN = "forging", "rebuild", "save", "open"
 
-COLOR_ACCENT, COLOR_MUTED, COLOR_MISSING, COLOR_OK = "#1a6bd8", "#777777", "#b3261e", "#2f8f46"
-
-STYLE = f"""
-QFrame#card {{ background: #ffffff; border: 1px solid #e3e3e3; border-radius: 8px; }}
-QLabel#title {{ font-size: 16px; font-weight: 600; color: #1f2933; }}
-QLabel#recap {{ color: {COLOR_MUTED}; }}
-QLabel#stage {{ color: #1f2933; }}
-QLabel#pathLabel {{ color: #1f2933; }}
-QLabel#summary {{ color: #1f2933; }}
-QLabel#warning {{ background: #fff6e0; border: 1px solid #f2c94c; border-radius: 6px; padding: 6px 10px;
-                  color: #7a4b00; }}
-QLabel#missing {{ color: {COLOR_MISSING}; }}
-QLineEdit#nameEdit {{ border: 1px solid #c8d0dc; border-radius: 6px; padding: 4px 8px; background: #ffffff; }}
-QLineEdit#nameEdit:focus {{ border: 1px solid {COLOR_ACCENT}; }}
-QPushButton#secondary {{ border: 1px solid #c8d0dc; border-radius: 6px; background: #ffffff; padding: 6px 14px;
-                         color: #1f2933; }}
-QPushButton#secondary:hover {{ background: #eef1f5; }}
-QPushButton#secondary:disabled {{ color: #a0a0a0; background: #f7f7f7; }}
-QPushButton#link {{ border: none; background: transparent; color: {COLOR_ACCENT}; text-decoration: underline;
-                    padding: 0; }}
-QToolButton#details {{ border: none; background: transparent; color: {COLOR_ACCENT}; padding: 2px 0; }}
-QToolButton#details:hover {{ color: #144f9f; }}
-QProgressBar {{ border: 1px solid #d3dae6; border-radius: 6px; background: #ffffff; max-height: 12px; }}
-QProgressBar::chunk {{ background: {COLOR_ACCENT}; border-radius: 5px; }}
-QPlainTextEdit#details {{ background: #fafafa; border: 1px solid #e3e3e3; border-radius: 6px; color: #1f2933; }}
+STYLE = """
+QFrame#card { background: $surface; border: 1px solid $border_soft; border-radius: 8px; }
+QLabel#title { font-size: 16px; font-weight: 600; color: $text; }
+QLabel#recap { color: $muted; }
+QLabel#stage { color: $text; }
+QLabel#pathLabel { color: $text; }
+QLabel#summary { color: $text; }
+QLabel#warning { background: $warn_soft; border: 1px solid $warn_border; border-radius: 6px; padding: 6px 10px;
+                 color: $warn_text; }
+QLabel#missing { color: $danger; }
+QLineEdit#nameEdit { border: 1px solid $border; border-radius: 6px; padding: 4px 8px; background: $surface; }
+QLineEdit#nameEdit:focus { border: 1px solid $accent; }
+QPushButton#secondary { border: 1px solid $border; border-radius: 6px; background: $surface; padding: 6px 14px;
+                        color: $text; }
+QPushButton#secondary:hover { background: $surface_alt; }
+QPushButton#secondary:disabled { color: $faint; background: $surface_sunken; }
+QPushButton#link { border: none; background: transparent; color: $accent; text-decoration: underline;
+                   padding: 0; }
+QToolButton#details { border: none; background: transparent; color: $accent; padding: 2px 0; }
+QToolButton#details:hover { color: $accent_hover; }
+QProgressBar { border: 1px solid $border; border-radius: 6px; background: $surface; max-height: 12px; }
+QProgressBar::chunk { background: $accent; border-radius: 5px; }
+QPlainTextEdit#details { background: $surface_sunken; border: 1px solid $border_soft; border-radius: 6px;
+                         color: $text; }
 """
 
 
@@ -170,7 +170,8 @@ class ForgePage(QWidget):
     primaryStateChanged = Signal()   # primary_state() would now return something else
     startOverClicked = Signal()      # "Start another"
 
-    def __init__(self, model: ForgeModel, preview: PreviewWidget, parent: QWidget | None = None) -> None:
+    def __init__(self, model: ForgeModel, preview: PreviewWidget, parent: QWidget | None = None,
+                 theme: Theme = LIGHT) -> None:
         super().__init__(parent)
         self.model = model
         self.preview = preview
@@ -186,8 +187,9 @@ class ForgePage(QWidget):
         self._changed_after_attempt = False                # settings changed since a failed or cancelled forge
         self._names = (model.family, model.style)          # to tell a name edit from an output-path change
         self._last_primary: tuple[str, bool] | None = None
+        self._theme = theme
         self.setObjectName("forgePage")
-        self.setStyleSheet(STYLE)
+        self.setStyleSheet(theme.render(STYLE))
 
         root = QHBoxLayout(self)
         root.setContentsMargins(16, 12, 16, 12)
@@ -294,7 +296,7 @@ class ForgePage(QWidget):
         self.hint_label.setObjectName("hint")
         self.hint_label.setWordWrap(True)
         self.hint_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.hint_label.setStyleSheet(f"color: {COLOR_MUTED};")
+        tint(self.hint_label, self._theme, "muted")
         self._ready_layout.addWidget(self.hint_label)
         outer.addWidget(self.ready_card, 1)
         return page
@@ -377,7 +379,7 @@ class ForgePage(QWidget):
         self.saved_label = QLabel("")
         self.saved_label.setObjectName("saved")
         self.saved_label.setWordWrap(True)
-        self.saved_label.setStyleSheet(f"color: {COLOR_OK};")
+        tint(self.saved_label, self._theme, "ok")
         self.saved_label.hide()
         self.remove_button = QPushButton("Remove from my fonts")
         self.remove_button.setObjectName("link")
@@ -405,6 +407,12 @@ class ForgePage(QWidget):
         m = self.model
         if m.validity() == "" and (m.result_path is None or m.is_stale) and not m.is_busy():
             m.combine()
+
+    def apply_theme(self, theme: Theme) -> None:
+        self._theme = theme
+        self.setStyleSheet(theme.render(STYLE))
+        for label in (self.hint_label, self.saved_label):
+            retint(label, theme)
 
     def state(self) -> int:
         """STATE_READY, STATE_FORGING or STATE_RESULT: which page of the stack is showing."""
@@ -569,12 +577,12 @@ class ForgePage(QWidget):
     def _refresh_hint(self) -> None:
         m = self.model
         problem = m.validity()
-        color = COLOR_MUTED
+        tone = "muted"
         tooltip = ""
         if problem:
-            text, color = HINT_INVALID.format(problem=problem), COLOR_MISSING
+            text, tone = HINT_INVALID.format(problem=problem), "danger"
         elif self._last_error:
-            text, color = HINT_FAILED.format(error=self._last_error), COLOR_MISSING
+            text, tone = HINT_FAILED.format(error=self._last_error), "danger"
             tooltip = self._error_detail or ""
         elif self._cancelled:
             text = HINT_CANCELLED
@@ -584,7 +592,7 @@ class ForgePage(QWidget):
             text = HINT_ARRIVE
         self.hint_label.setText(text)
         self.hint_label.setToolTip(tooltip)
-        self.hint_label.setStyleSheet(f"color: {color};")
+        tint(self.hint_label, self._theme, tone)
 
     def _refresh_recap(self) -> None:
         m = self.model
@@ -774,7 +782,7 @@ class ForgePage(QWidget):
             return
         self._installed_name = full_name
         self.saved_label.setText(INSTALLED_TEXT.format(name=full_name))
-        self.saved_label.setStyleSheet(f"color: {COLOR_OK};")
+        tint(self.saved_label, self._theme, "ok")
         self.saved_label.show()
         self.remove_button.show()
 
@@ -788,7 +796,7 @@ class ForgePage(QWidget):
             return
         self._installed_name = None
         self.saved_label.setText(REMOVED_TEXT if removed else NOT_INSTALLED_TEXT)
-        self.saved_label.setStyleSheet(f"color: {COLOR_MUTED};")
+        tint(self.saved_label, self._theme, "muted")
         self.remove_button.hide()
 
     def _open_folder(self) -> None:

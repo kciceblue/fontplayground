@@ -4,8 +4,8 @@ from PySide6.QtCore import Qt
 from PySide6.QtGui import QFont
 
 from fontplayground.catalog.face import read_faces
-from fontplayground.ui.preview import (EDITOR_TOGGLE_TEXT, MISSING_COLOR, PLACEHOLDER_HTML, PreviewWidget, font_loader,
-                                       make_font)
+from fontplayground.ui.preview import EDITOR_TOGGLE_TEXT, PLACEHOLDER_TEXT, PreviewWidget, font_loader, make_font
+from fontplayground.ui.theme import DARK, LIGHT, placeholder_html
 
 
 def _widget(qtbot, sizes=(12,), show=True) -> PreviewWidget:
@@ -126,7 +126,7 @@ def test_plan_mode_marks_characters_nobody_draws(qtbot, font_dir):
     w.set_sample_text("ab漢c 한\nc")
     assert w.missing_characters() == ["한"]
     frags = _fragments(w.browsers[0].document())
-    red = [t for t, _, bg in frags if bg == MISSING_COLOR]
+    red = [t for t, _, bg in frags if bg == LIGHT.missing]
     assert red == ["한"]
     assert [t for t, _, _ in frags] == ["ab", "漢", "c ", "한", "c"]  # the space is not red; new line = new block
     assert w.browsers[0].document().blockCount() == 2
@@ -248,7 +248,8 @@ def test_placeholder_arrives_with_the_first_show(qtbot):
     assert w.browsers[0].document().isEmpty()
     w.show()
     assert "Select a font to preview" in w.browsers[0].toPlainText()
-    assert PLACEHOLDER_HTML.startswith("<span")
+    assert PLACEHOLDER_TEXT in w.browsers[0].toPlainText()
+    assert placeholder_html(LIGHT).startswith("<span") and LIGHT.muted in placeholder_html(LIGHT)
 
 
 # ----- S5: invisible characters are never missing -----
@@ -269,6 +270,24 @@ def test_invisible_characters_join_their_neighbours_in_plan_mode(qtbot, font_dir
     w.set_sample_text("a‍漢️​b 한‍")     # ZWJ, VS16, ZWSP, ZWJ
     assert w.missing_characters() == ["한"]
     frags = _fragments(w.browsers[0].document())
-    assert [t for t, _, bg in frags if bg == MISSING_COLOR] == ["한"]   # the joiner after 한 is not red
+    assert [t for t, _, bg in frags if bg == LIGHT.missing] == ["한"]   # the joiner after 한 is not red
     assert [(t, f) for t, f, _ in frags] == [("a‍", "Fixture A"), ("漢️​", "Fixture B"),
                                              ("b ", "Fixture A"), ("한", "Fixture A"), ("‍", "Fixture A")]
+
+
+def test_apply_theme_recolours_missing_characters_and_the_placeholder(qtbot, font_dir):
+    w = _widget(qtbot)
+    a, b, fonts, source = _plan(font_dir)
+    w.set_plan(fonts, source.get)
+    w.set_sample_text("ab 한")
+    assert [t for t, _, bg in _fragments(w.browsers[0].document()) if bg == LIGHT.missing] == ["한"]
+    w.apply_theme(DARK)
+    assert [t for t, _, bg in _fragments(w.browsers[0].document()) if bg == DARK.missing] == ["한"]
+    w.clear()
+    assert DARK.muted in w.browsers[0].toHtml()
+    dark = PreviewWidget(sizes=(12,), theme=DARK)
+    qtbot.addWidget(dark)
+    dark.show()
+    (a,) = read_faces(font_dir / "A.ttf")          # A draws "abc1," only: the default sample has plenty it lacks
+    dark.set_face(a)
+    assert DARK.missing in {bg for _, _, bg in _fragments(dark.browsers[0].document())}

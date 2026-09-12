@@ -20,6 +20,7 @@ from PySide6.QtWidgets import (QHBoxLayout, QLabel, QPlainTextEdit, QScrollArea,
 
 from fontplayground.catalog.face import FontFace
 from fontplayground.ui.textutil import is_ignorable, visible_chars
+from fontplayground.ui.theme import LIGHT, Theme, placeholder_html
 
 DEFAULT_SAMPLE = (
     "The quick brown fox jumps over the lazy dog 0123456789\n"
@@ -28,9 +29,7 @@ DEFAULT_SAMPLE = (
     "مرحبا بالعالم  שלום עולם  नमस्ते\n"
     "€ £ ¥ § ¶ → ✓ ☺ ①"
 )
-MISSING_COLOR = "#ffb3b3"
-MISSING_STYLE = f"background-color:{MISSING_COLOR};"
-PLACEHOLDER_HTML = '<span style="color:gray">Select a font to preview</span>'
+PLACEHOLDER_TEXT = "Select a font to preview"
 EDITOR_TOGGLE_TEXT = "Edit sample text"
 
 FaceKey = tuple[str, int]
@@ -93,8 +92,9 @@ def default_wght(axes) -> float | None:
 class PreviewWidget(QWidget):
     sampleChanged = Signal(str)
 
-    def __init__(self, parent: QWidget | None = None, sizes=(12, 24, 48)) -> None:
+    def __init__(self, parent: QWidget | None = None, sizes=(12, 24, 48), theme: Theme = LIGHT) -> None:
         super().__init__(parent)
+        self._theme = theme
         # single-font mode
         self._path: str | None = None
         self._preferred: str | None = None
@@ -264,6 +264,11 @@ class PreviewWidget(QWidget):
         if not self._render_timer.isActive():
             self._render_timer.start()
 
+    def apply_theme(self, theme: Theme) -> None:
+        """Store the theme and redraw at once (or owe the redraw to the next show, like every other setter)."""
+        self._theme = theme
+        self._render()
+
     def missing_characters(self) -> list[str]:
         """Sample characters (sorted, unique, no spaces or invisible characters) the shown font(s) cannot draw."""
         if not self._has_content():
@@ -302,7 +307,7 @@ class PreviewWidget(QWidget):
             for ch in line:
                 esc = html.escape(ch)
                 if not is_ignorable(ch) and ord(ch) not in self._codepoints:
-                    esc = f'<span style="{MISSING_STYLE}">{esc}</span>'
+                    esc = f'<span style="background-color:{self._theme.missing};">{esc}</span>'
                 parts.append(esc)
             lines.append("".join(parts).replace("  ", "&nbsp; "))
         return "<br>".join(lines) or "&nbsp;"
@@ -336,7 +341,7 @@ class PreviewWidget(QWidget):
         doc = browser.document()
         doc.setDefaultFont(fallback)
         cursor = QTextCursor(doc)
-        missing_brush = QColor(MISSING_COLOR)
+        missing_brush = QColor(self._theme.missing)
         block_format = QTextBlockFormat()
         block_format.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignAbsolute)  # RTL lines stay on the left too
         cursor.beginEditBlock()   # one document change for the whole sample, not one per run
@@ -363,7 +368,7 @@ class PreviewWidget(QWidget):
         self._render_owed = False
         for spin, browser in zip(self.size_spins, self.browsers):
             if not self._has_content():
-                browser.setHtml(PLACEHOLDER_HTML)
+                browser.setHtml(placeholder_html(self._theme, PLACEHOLDER_TEXT))
             elif self._plan_mode:
                 self._fill_plan_document(browser, spin.value())
             else:

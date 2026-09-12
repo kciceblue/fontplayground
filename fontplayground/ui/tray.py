@@ -17,6 +17,7 @@ from PySide6.QtWidgets import (QAbstractItemView, QFrame, QHBoxLayout, QLabel, Q
 
 from fontplayground.engine.scripts import LABELS
 from fontplayground.ui.model import ForgeModel
+from fontplayground.ui.theme import LIGHT, Theme, retint, tint
 
 FaceKey = tuple[str, int]
 
@@ -26,38 +27,38 @@ MAX_PRIMARY_CHARS = 42         # longer primary labels lose their middle; the to
 PRIMARY_MIN_WIDTH = 260        # the primary button never asks the window for more than this (its text may clip)
 SUGGESTION_MIN_WIDTHS = (0, 860, 1000)   # tray width needed to show the 1st, 2nd and 3rd suggestion button
 MIN_HEIGHT, MAX_HEIGHT = 64, 84
-COLOR_MISSING, COLOR_OK, COLOR_NEUTRAL = "#b91c1c", "#15803d", "#4b5563"
 
 STYLE = """
-QWidget#tray { border-top: 1px solid #d3dae6; }
+QWidget#tray { background: $surface; border-top: 1px solid $border; }
 QListWidget#chips { background: transparent; border: none; }
 QListWidget#chips::item { border: none; padding: 0; margin: 0; }
 QListWidget#chips::item:selected, QListWidget#chips::item:hover { background: transparent; }
-QFrame#chip { background: #eef1f5; border: 1px solid #d3dae6; border-radius: 13px; }
-QFrame#chip[main="true"] { background: #e2ecff; border: 1px solid #7fa6f5; }
-QLabel#chipText { background: transparent; border: none; color: #1f2933; }
-QFrame#chip[main="true"] QLabel#chipText { color: #1d4ed8; font-weight: 600; }
-QToolButton#chipClose { border: none; background: transparent; color: #6b7280; font-weight: bold; padding: 0 2px; }
-QToolButton#chipClose:hover { color: #b91c1c; }
-QPushButton#addButton { border: 1px dashed #9aa5b1; border-radius: 13px; background: transparent;
-                        color: #4b5563; padding: 3px 12px; }
-QPushButton#addButton:hover { border-color: #2563eb; color: #2563eb; }
-QPushButton#suggest { border: 1px solid #f0b4b4; border-radius: 10px; background: #fff5f5; color: #b91c1c;
-                      padding: 1px 8px; }
-QPushButton#suggest:hover { background: #fee2e2; }
-QLabel#recap { color: #4b5563; }
-QPushButton#backButton { border: 1px solid #c8d0dc; border-radius: 6px; background: transparent; padding: 6px 12px; }
-QPushButton#backButton:hover { background: #eef1f5; }
-QPushButton#primaryButton { background: #2563eb; color: white; border: none; border-radius: 6px;
+QFrame#chip { background: $surface_alt; border: 1px solid $border; border-radius: 13px; }
+QFrame#chip[main="true"] { background: $accent_soft; border: 1px solid $accent_soft_border; }
+QLabel#chipText { background: transparent; border: none; color: $text; }
+QFrame#chip[main="true"] QLabel#chipText { color: $accent_soft_text; font-weight: 600; }
+QToolButton#chipClose { border: none; background: transparent; color: $muted; font-weight: bold; padding: 0 2px; }
+QToolButton#chipClose:hover { color: $danger; }
+QPushButton#addButton { border: 1px dashed $faint; border-radius: 13px; background: transparent;
+                        color: $text_secondary; padding: 3px 12px; }
+QPushButton#addButton:hover { border-color: $accent; color: $accent; }
+QPushButton#suggest { border: 1px solid $danger_soft_border; border-radius: 10px; background: $danger_soft;
+                      color: $danger; padding: 1px 8px; }
+QPushButton#suggest:hover { background: $danger_soft_hover; }
+QLabel#recap { color: $text_secondary; }
+QPushButton#backButton { border: 1px solid $border; border-radius: 6px; background: transparent; padding: 6px 12px;
+                         color: $text; }
+QPushButton#backButton:hover { background: $surface_alt; }
+QPushButton#primaryButton { background: $accent; color: $on_accent; border: none; border-radius: 6px;
                             padding: 6px 16px; font-weight: 600; }
 QPushButton#primaryButton[attached="true"] { border-top-right-radius: 0; border-bottom-right-radius: 0; }
-QPushButton#primaryButton:hover { background: #1d4ed8; }
-QPushButton#primaryButton:disabled { background: #b7c7ea; color: #f8fafc; }
-QToolButton#primaryMenu { background: #2563eb; color: white; border: none; border-left: 1px solid #1d4ed8;
+QPushButton#primaryButton:hover { background: $accent_hover; }
+QPushButton#primaryButton:disabled { background: $accent_disabled; color: $accent_disabled_text; }
+QToolButton#primaryMenu { background: $accent; color: $on_accent; border: none; border-left: 1px solid $accent_hover;
                           border-top-right-radius: 6px; border-bottom-right-radius: 6px; padding: 0 5px;
                           font-weight: 600; }
-QToolButton#primaryMenu:hover { background: #1d4ed8; }
-QToolButton#primaryMenu:disabled { background: #b7c7ea; color: #f8fafc; }
+QToolButton#primaryMenu:hover { background: $accent_hover; }
+QToolButton#primaryMenu:disabled { background: $accent_disabled; color: $accent_disabled_text; }
 QToolButton#primaryMenu::menu-indicator { image: none; }
 """
 
@@ -229,13 +230,14 @@ class MaterialsTray(QWidget):
     primaryClicked = Signal()
     addClicked = Signal()
 
-    def __init__(self, model: ForgeModel, parent: QWidget | None = None) -> None:
+    def __init__(self, model: ForgeModel, parent: QWidget | None = None, theme: Theme = LIGHT) -> None:
         super().__init__(parent)
         self.model = model
+        self._theme = theme
         self._sync_pending = False
         self.setObjectName("tray")
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
-        self.setStyleSheet(STYLE)
+        self.setStyleSheet(theme.render(STYLE))
         self.setMinimumHeight(MIN_HEIGHT)
         self.setMaximumHeight(MAX_HEIGHT)
 
@@ -334,6 +336,11 @@ class MaterialsTray(QWidget):
     def set_back_visible(self, visible: bool) -> None:
         self.back_button.setVisible(visible)
 
+    def apply_theme(self, theme: Theme) -> None:
+        self._theme = theme
+        self.setStyleSheet(theme.render(STYLE))
+        retint(self.hint_label, theme)
+
     def chip_labels(self) -> list[str]:
         return [self.list.item(i).text() for i in range(self.list.count())]
 
@@ -398,14 +405,14 @@ class MaterialsTray(QWidget):
             button.hide()  # gone from view at once; deletion happens on the next event-loop pass
             button.deleteLater()
         if not self.model.rows:
-            self._set_hint("Pick a font to begin.", COLOR_NEUTRAL)
+            self._set_hint("Pick a font to begin.", "text_secondary")
         else:
             missing = self.model.missing_sample_chars()
             if not missing:
-                self._set_hint("Your sample is fully covered.", COLOR_OK)
+                self._set_hint("Your sample is fully covered.", "ok")
             else:
                 shown = " ".join(missing[:MAX_HINT_CHARS]) + (" …" if len(missing) > MAX_HINT_CHARS else "")
-                self._set_hint(f"Your sample still needs: {shown}", COLOR_MISSING,
+                self._set_hint(f"Your sample still needs: {shown}", "danger",
                                full=f"Your sample still needs: {' '.join(missing)}")
                 for face in self.model.suggestions(MAX_SUGGESTIONS):
                     button = QPushButton(f"Add {face.family}")
@@ -416,8 +423,8 @@ class MaterialsTray(QWidget):
                     self.suggestions_layout.addWidget(button)
         self._apply_suggestion_visibility()
 
-    def _set_hint(self, text: str, color: str, full: str | None = None) -> None:
-        self.hint_label.setStyleSheet(f"color: {color};")
+    def _set_hint(self, text: str, tone: str, full: str | None = None) -> None:
+        tint(self.hint_label, self._theme, tone)
         self.hint_label.set_text(text, full)
 
     def _apply_suggestion_visibility(self) -> None:

@@ -25,6 +25,7 @@ from fontplayground.engine.scripts import GROUP_IDS, LABELS, group_of
 from fontplayground.ui import smart
 from fontplayground.ui.model import ForgeModel
 from fontplayground.ui.preview import PreviewWidget
+from fontplayground.ui.theme import LIGHT, Theme, retint, tint
 
 FaceKey = tuple[str, int]
 
@@ -50,38 +51,38 @@ ADD_TEXT = "Add to materials"
 ADDED_TEXT = "✓ Added to materials (click to remove)"
 ADDED_MARK = " ✓"
 LOCKED_TOOLTIP = "Wait for the forge to finish"
-COLOR_MISSING, COLOR_OK, COLOR_MUTED, COLOR_TEXT = "#b3261e", "#2f8f46", "#777777", "#444444"
 
 STYLE = """
-QWidget#pickPage { background: #f4f6f9; }
-QLineEdit#search { border: 1px solid #d3dae6; border-radius: 6px; padding: 5px 8px; background: #ffffff; }
-QLineEdit#search:focus { border-color: #1a6bd8; }
-QPushButton#filterChip { border: 1px solid #d3dae6; border-radius: 12px; background: #ffffff; color: #444444;
+QWidget#pickPage { background: $window; }
+QLineEdit#search { border: 1px solid $border; border-radius: 6px; padding: 5px 8px; background: $surface; }
+QLineEdit#search:focus { border-color: $accent; }
+QPushButton#filterChip { border: 1px solid $border; border-radius: 12px; background: $surface; color: $text_secondary;
                          padding: 2px 10px; }
-QPushButton#filterChip:hover { border-color: #1a6bd8; color: #1a6bd8; }
-QPushButton#filterChip:checked { background: #1a6bd8; border-color: #1a6bd8; color: #ffffff; }
-QTreeWidget#fontTree { background: #ffffff; border: 1px solid #d3dae6; border-radius: 6px; }
+QPushButton#filterChip:hover { border-color: $accent; color: $accent; }
+QPushButton#filterChip:checked { background: $accent; border-color: $accent; color: $on_accent; }
+QTreeWidget#fontTree { background: $surface; border: 1px solid $border; border-radius: 6px; }
 QTreeWidget#fontTree::item { padding: 2px 0; }
-QProgressBar#scanProgress { border: 1px solid #d3dae6; border-radius: 6px; background: #ffffff; text-align: center;
+QProgressBar#scanProgress { border: 1px solid $border; border-radius: 6px; background: $surface; text-align: center;
                             max-height: 14px; }
-QProgressBar#scanProgress::chunk { background: #1a6bd8; border-radius: 5px; }
-QLabel#status { color: #777777; }
-QWidget#card { background: #ffffff; border: 1px solid #d3dae6; border-radius: 8px; }
-QLabel#familyTitle { font-size: 16px; font-weight: 600; color: #1f2933; background: transparent; }
-QLabel#styleCaption { color: #777777; background: transparent; }
-QLabel#licence { color: #777777; border: 1px solid #d3dae6; border-radius: 10px; padding: 1px 8px;
+QProgressBar#scanProgress::chunk { background: $accent; border-radius: 5px; }
+QLabel#status { color: $muted; }
+QWidget#card { background: $surface; border: 1px solid $border; border-radius: 8px; }
+QLabel#familyTitle { font-size: 16px; font-weight: 600; color: $text; background: transparent; }
+QLabel#styleCaption { color: $muted; background: transparent; }
+QLabel#licence { color: $muted; border: 1px solid $border; border-radius: 10px; padding: 1px 8px;
                  background: transparent; }
-QLabel#licence[restricted="true"] { color: #b3261e; border-color: #e8b4b0; background: #fff5f5; }
+QLabel#licence[restricted="true"] { color: $danger; border-color: $danger_soft_border; background: $danger_soft; }
 QLabel#coverage { background: transparent; }
-QToolButton#detailsToggle { border: none; background: transparent; color: #1a6bd8; padding: 2px 0; }
-QLabel#details { color: #777777; background: transparent; }
-QPushButton#addButton { background: #1a6bd8; color: #ffffff; border: 1px solid #1a6bd8; border-radius: 8px;
+QToolButton#detailsToggle { border: none; background: transparent; color: $accent; padding: 2px 0; }
+QLabel#details { color: $muted; background: transparent; }
+QPushButton#addButton { background: $accent; color: $on_accent; border: 1px solid $accent; border-radius: 8px;
                         padding: 10px 18px; font-size: 14px; font-weight: 600; }
-QPushButton#addButton:hover { background: #155bb8; border-color: #155bb8; }
-QPushButton#addButton:checked { background: #e9f5ec; color: #2f8f46; border-color: #2f8f46; }
-QPushButton#addButton:checked:hover { background: #fdecea; color: #b3261e; border-color: #b3261e; }
-QPushButton#addButton:disabled { background: #e5e7eb; color: #9aa0a6; border-color: #e5e7eb; }
+QPushButton#addButton:hover { background: $accent_hover; border-color: $accent_hover; }
+QPushButton#addButton:checked { background: $ok_soft; color: $ok; border-color: $ok; }
+QPushButton#addButton:checked:hover { background: $danger_soft; color: $danger; border-color: $danger; }
+QPushButton#addButton:disabled { background: $surface_alt; color: $faint; border-color: $surface_alt; }
 """
+COVERAGE_CSS = "background: transparent;"   # the coverage label keeps the card's background whatever its tone
 
 
 # ----- pure helpers ------------------------------------------------------------------------------
@@ -171,10 +172,12 @@ def face_info_text(face: FontFace) -> str:
 class PickPage(QWidget):
     currentFaceChanged = Signal(object)   # FontFace | None: the face shown in the preview
 
-    def __init__(self, model: ForgeModel, preview: PreviewWidget, parent: QWidget | None = None) -> None:
+    def __init__(self, model: ForgeModel, preview: PreviewWidget, parent: QWidget | None = None,
+                 theme: Theme = LIGHT) -> None:
         super().__init__(parent)
         self.model = model
         self.preview = preview
+        self._theme = theme
         self._faces: dict[FaceKey, FontFace] = {}
         self._face_items: dict[FaceKey, QTreeWidgetItem] = {}
         self._families: dict[str, QTreeWidgetItem] = {}
@@ -190,7 +193,7 @@ class PickPage(QWidget):
 
         self.setObjectName("pickPage")
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
-        self.setStyleSheet(STYLE)
+        self.setStyleSheet(theme.render(STYLE))
 
         # ----- left pane -----
         left = QWidget()
@@ -361,9 +364,7 @@ class PickPage(QWidget):
         item.setToolTip(COL_FORMAT, face.path)
         if not face.supported:
             # Greyed, not disabled: it can still be selected, previewed and inspected.
-            grey = QBrush(self.tree.palette().color(QPalette.ColorGroup.Disabled, QPalette.ColorRole.Text))
-            for col in range(len(COLUMNS)):
-                item.setForeground(col, grey)
+            self._grey_out(item)
             item.setToolTip(COL_NAME, face.unsupported_reason)
         self._face_items[face.key] = item
 
@@ -429,6 +430,19 @@ class PickPage(QWidget):
             return
         self._locked = locked
         self._refresh_add_button()
+
+    # ----- theme -----
+    def apply_theme(self, theme: Theme) -> None:
+        """Re-render the sheet and every colour this page sets by hand: coverage line, tray marks, greyed faces."""
+        self._theme = theme
+        self.setStyleSheet(theme.render(STYLE))
+        retint(self.coverage_label, theme, COVERAGE_CSS)
+        for family_item in self._families.values():
+            if family_item.data(COL_FORMAT, Qt.ItemDataRole.ForegroundRole) is not None:
+                family_item.setForeground(COL_FORMAT, QBrush(QColor(theme.ok)))
+        for key, item in self._face_items.items():
+            if not self._faces[key].supported:
+                self._grey_out(item)
 
     # ----- selection -----
     def select_face(self, key: FaceKey) -> bool:
@@ -653,31 +667,31 @@ class PickPage(QWidget):
         """
         face = self._current_face
         if face is None:
-            self._set_coverage("", COLOR_MUTED, "")
+            self._set_coverage("", "muted", "")
             return
         covers = ", ".join(LABELS[g] for g in covered_groups(face)) or NO_GROUPS_TEXT
         tooltip = ""
         if self.model.has(face.key):
-            tail, color = "In your materials", COLOR_OK
+            tail, tone = "In your materials", "ok"
         elif not self.model.rows:
             missing = sorted({c for c in self.model.sample_text if not c.isspace() and ord(c) not in face.codepoints})
             if missing:
                 shown = " ".join(missing[:MAX_MISSING_CHARS]) + (" …" if len(missing) > MAX_MISSING_CHARS else "")
-                tail, color = f"Missing from your sample: {shown}", COLOR_MISSING
+                tail, tone = f"Missing from your sample: {shown}", "danger"
                 tooltip = "Not in this font: " + " ".join(missing)
             else:
-                tail, color = "Covers your whole sample", COLOR_OK
+                tail, tone = "Covers your whole sample", "ok"
         else:
             adds = groups_added(face, self.model.missing_sample_chars())
             if adds:
-                tail, color = "Would add to your sample: " + ", ".join(LABELS[g] for g in adds), COLOR_OK
+                tail, tone = "Would add to your sample: " + ", ".join(LABELS[g] for g in adds), "ok"
             else:
-                tail, color = ADDS_NOTHING_TEXT, COLOR_MUTED
-        self._set_coverage(f"Covers {covers} · {tail}", color, tooltip)
+                tail, tone = ADDS_NOTHING_TEXT, "muted"
+        self._set_coverage(f"Covers {covers} · {tail}", tone, tooltip)
 
-    def _set_coverage(self, text: str, color: str, tooltip: str) -> None:
+    def _set_coverage(self, text: str, tone: str, tooltip: str) -> None:
         self.coverage_label.setText(text)
-        self.coverage_label.setStyleSheet(f"color: {color}; background: transparent;")
+        tint(self.coverage_label, self._theme, tone, COVERAGE_CSS)
         self.coverage_label.setToolTip(tooltip)
 
     # ----- tree internals -----
@@ -695,6 +709,11 @@ class PickPage(QWidget):
             item.setExpanded(False)
         return item
 
+    def _grey_out(self, item: QTreeWidgetItem) -> None:
+        grey = QBrush(self.tree.palette().color(QPalette.ColorGroup.Disabled, QPalette.ColorRole.Text))
+        for col in range(len(COLUMNS)):
+            item.setForeground(col, grey)
+
     def _faces_of(self, family_item: QTreeWidgetItem) -> list[FontFace]:
         return [self._faces[family_item.child(i).data(COL_NAME, Qt.ItemDataRole.UserRole)]
                 for i in range(family_item.childCount())]
@@ -708,6 +727,6 @@ class PickPage(QWidget):
         family_item.setText(COL_FORMAT, family_format(faces) + (ADDED_MARK if added else ""))
         family_item.setToolTip(COL_FORMAT, "In your materials" if added else "")
         if added:
-            family_item.setForeground(COL_FORMAT, QBrush(QColor(COLOR_OK)))
+            family_item.setForeground(COL_FORMAT, QBrush(QColor(self._theme.ok)))
         else:
             family_item.setData(COL_FORMAT, Qt.ItemDataRole.ForegroundRole, None)
