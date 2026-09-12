@@ -48,8 +48,6 @@ Producing a whole family in one run, per-language variants of shared CJK charact
 
 On Windows, two tests in `tests/test_install.py` briefly install a fixture font for the current user and remove it again.
 
-Design specs: `docs/superpowers/specs/2026-09-11-font-playground-design.md` (engine, catalog), `docs/superpowers/specs/2026-09-12-workflow-ui-design.md` (UI) and `docs/superpowers/specs/2026-09-12-theme-design.md` (light/dark theme). The files under `docs/superpowers/plans` are the step-by-step implementation plans those specs were built from, kept as a record.
-
 ## Licence
 
 Font Playground is released under the MIT License (see `LICENSE`). `cff_to_glyf` in `fontplayground/engine/prepare.py` is adapted from fontTools' `Snippets/otf2ttf.py` (Copyright (c) 2017 Just van Rossum, MIT). The dependencies are installed from PyPI and are not part of this repository: fontTools (MIT), skia-pathops (BSD-3-Clause), unicodedata2 (Apache-2.0) and PySide6 / Qt for Python (LGPL v3); if you redistribute a bundled build, include the Qt LGPL notices.
