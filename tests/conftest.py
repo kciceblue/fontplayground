@@ -8,6 +8,19 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 from tests.fixtures import build_collection, build_font, cps  # noqa: E402
 
 
+@pytest.fixture(autouse=True)
+def _reset_theme():
+    """A test that switched the application to DARK must not colour the tests after it."""
+    yield
+    from PySide6.QtGui import QGuiApplication
+
+    if QGuiApplication.instance() is not None:
+        from fontplayground.ui.theme import LIGHT
+
+        QGuiApplication.styleHints().unsetColorScheme()
+        QGuiApplication.setPalette(LIGHT.palette())
+
+
 @pytest.fixture(scope="session")
 def font_dir(tmp_path_factory) -> Path:
     d = tmp_path_factory.mktemp("fonts")
