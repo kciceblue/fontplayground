@@ -3,17 +3,23 @@ from pathlib import Path
 
 import pytest
 
+from PySide6.QtGui import QFont
+
 from fontplayground.catalog.face import read_faces
-from fontplayground.engine.scripts import GROUPS, LABELS
+from fontplayground.engine.scripts import GROUP_IDS, GROUPS, LABELS
 from fontplayground.engine.spec import ForgeReport
 from fontplayground.ui import workers
-from fontplayground.ui.check_page import (ADDS_NOTHING_TEXT, AS_IS, COL_COUNTS, COL_SUPPLIER, LINE_SPACING_BADGE,
-                                          MISSING_PREFIX, NO_COUNT, NOBODY, PENDING_TEXT, PLACEHOLDER_TEXT,
-                                          SAMPLE_LINE, SAMPLE_PT, SHOW_ALL_TEXT, SHOW_COVERED_TEXT, WEIGHT_CHOICES,
-                                          CheckPage, MaterialCard, plan_line, short_names)
-from fontplayground.ui.model import ForgeModel
+from fontplayground.ui.check_page import (ADDS_NOTHING_TEXT, ADJUST_TEXT, AS_IS, COL_COUNTS, COL_SUPPLIER,
+                                          LINE_SPACING_BADGE, MAX_MISSING_CHARS, MISSING_PREFIX, NO_COUNT, NOBODY,
+                                          PENDING_TEXT, PLACEHOLDER_TEXT, SAMPLE_LINE, SAMPLE_PT, SHOW_ALL_TEXT,
+                                          SHOW_COVERED_TEXT, WEIGHT_CHOICES, CheckPage, MaterialCard, adjust_title,
+                                          plan_line, sample_wght, short_names)
+from fontplayground.ui.model import ForgeModel, MaterialRow
 from fontplayground.ui.preview import MISSING_COLOR, PreviewWidget
 from tests.fixtures import cps, fake_face
+
+# one character per script group, in GROUPS order (Ethiopic ሀ falls into "Everything else")
+ONE_PER_GROUP = "aΩжԱאاनกあ한漢，→😀ሀ"
 
 
 @pytest.fixture
@@ -172,15 +178,16 @@ def test_plan_lines_summarise_each_share(qtbot, model, faces):
     v_card = page.cards[2]
     assert v_card.plan_label.isHidden() and not v_card.nothing_badge.isHidden()
     assert v_card.nothing_badge.text() == ADDS_NOTHING_TEXT
-    model.move(v.key, 0)                             # first in line, but A still covers Latin better: no share
+    model.move(v.key, 0)                             # as Main it keeps the Latin it has (a tenth of A's is enough)
     assert [c.plan_label.text() for c in page.cards] == [PENDING_TEXT] * 3   # rebuilt: the lines wait again
     model.recompute_plan_now()
     assert page.cards[0].key == v.key
-    assert page.cards[0].plan_label.isHidden() and not page.cards[0].nothing_badge.isHidden()
-    model.set_pin("latin", v.key)                    # asked for explicitly: V draws the Latin it has
-    model.recompute_plan_now()
     assert page.cards[0].plan_label.text() == "supplies Latin 2 (2 characters)" and page.cards[0].nothing_badge.isHidden()
     assert page.cards[1].plan_label.text() == "supplies Latin 3 (3 characters)"
+    model.set_pin("latin", a.key)                    # asked for explicitly: A draws all the Latin, V has no share
+    model.recompute_plan_now()
+    assert page.cards[0].plan_label.isHidden() and not page.cards[0].nothing_badge.isHidden()
+    assert page.cards[1].plan_label.text() == "supplies Latin 5 (5 characters)"
 
 
 def test_move_buttons_reorder_the_model_and_rebuild_the_cards(qtbot, page_ab, model, faces):
@@ -359,3 +366,190 @@ def test_refresh_rebuilds_from_the_model(qtbot, model, faces):
     assert page.cards[1].plan_label.text() == "supplies Han 1 · CJK symbols & fullwidth 1 (2 characters)"
     assert page.table_groups() == ["latin", "han", "cjk_symbols"]
     assert page.preview.in_plan_mode() and page.preview.current_family() == "Fixture A"
+
+
+# ----- show all -----------------------------------------------------------------------------------
+def test_show_all_button_hides_when_every_script_is_covered(qtbot, model, faces):
+    a, b, v = faces
+    everything = fake_face(cps(ONE_PER_GROUP), path="all.ttf", family="Fixture All")
+    assert everything.scripts == GROUP_IDS                       # one character in each of the 15 groups
+    model.add(a)
+    page = _page(qtbot, model)
+    assert not page.show_all_button.isHidden()                   # Latin only: 14 scripts to reveal
+    model.add(everything)
+    assert page.show_all_button.isHidden() and page.table.rowCount() == len(GROUPS)
+    assert page.supplier_combo("emoji") is not None and page.cell_text("other", COL_COUNTS) == "Fixture All 1"
+    model.remove(everything.key)
+    assert not page.show_all_button.isHidden() and page.table.rowCount() == 1
+    page.show_all_button.click()                                 # checked when every group turns up covered again
+    model.add(everything)
+    assert page.show_all_button.isHidden() and page.table.rowCount() == len(GROUPS)
+    model.remove(everything.key)
+    assert not page.show_all_button.isHidden() and page.show_all_button.isChecked()
+    assert page.table.rowCount() == len(GROUPS) and page.show_all_button.text() == SHOW_COVERED_TEXT
+
+
+# ----- adjust title and the variable font sample line -----------------------------------------------
+def test_adjust_title_helper():
+    assert adjust_title(None, None) == ADJUST_TEXT == "Adjust"
+    assert adjust_title(700, None) == "Adjust · boldness 700"
+    assert adjust_title(None, 1.1) == "Adjust · size 110 %"
+    assert adjust_title(700, 1.1) == "Adjust · boldness 700 · size 110 %"
+    assert adjust_title(None, 1.0) == "Adjust"                   # 100 % is the default size
+
+
+def test_adjust_title_reflects_the_values_set_either_way(page_ab, model, faces):
+    a, b, v = faces
+    a_card, b_card = page_ab.cards
+    assert a_card.adjust_button.text() == "Adjust" and b_card.adjust_button.text() == "Adjust"
+    a_card.weight_combo.setCurrentText("700")                    # through the combo
+    assert a_card.adjust_button.text() == "Adjust · boldness 700"
+    a_card.scale_spin.setValue(110)
+    assert a_card.adjust_button.text() == "Adjust · boldness 700 · size 110 %"
+    a_card.weight_combo.setCurrentText(AS_IS)
+    assert a_card.adjust_button.text() == "Adjust · size 110 %"
+    a_card.scale_spin.setValue(100)
+    assert a_card.adjust_button.text() == "Adjust"
+    model.set_adjust(b.key, 300, 0.8)                            # through the model
+    assert b_card.adjust_button.text() == "Adjust · boldness 300 · size 80 %"
+    model.set_adjust(b.key, None, None)
+    assert b_card.adjust_button.text() == "Adjust"
+    assert page_ab.cards[1] is b_card                            # refreshed in place
+
+
+def test_sample_wght_helper(faces):
+    a, b, v = faces
+    assert sample_wght(a, None) is None and sample_wght(a, 700) is None   # no weight axis: nothing to draw at
+    assert sample_wght(v, None) == 400.0                         # the axis default
+    assert sample_wght(v, 700) == 700.0
+    assert sample_wght(v, 950) == 900.0 and sample_wght(v, 50) == 100.0   # kept within 100–900
+
+
+def test_variable_font_sample_line_follows_the_boldness(qtbot, model, faces):
+    a, b, v = faces
+    model.add(a)
+    model.add(v)
+    page = _page(qtbot, model)
+    a_card, v_card = page.cards
+    wght = QFont.Tag("wght")
+
+    def drawn_at(card) -> float | None:
+        font = card.sample.document().defaultFont()
+        return font.variableAxisValue(wght) if font.isVariableAxisSet(wght) else None
+
+    assert v_card.shown_wght() == 400.0 and drawn_at(v_card) == 400.0
+    assert a_card.shown_wght() is None and drawn_at(a_card) is None
+    v_card.weight_combo.setCurrentText("700")                    # re-rendered at the chosen boldness
+    assert model.row(v.key).weight == 700
+    assert v_card.shown_wght() == 700.0 and drawn_at(v_card) == 700.0
+    assert "".join(t for t, *_ in _fragments(v_card.sample.document())) == SAMPLE_LINE
+    assert "漢" in _red_chars(v_card.sample.document())          # still honest about what it lacks
+    model.set_adjust(v.key, None, None)                          # back to the axis default
+    assert v_card.shown_wght() == 400.0 and drawn_at(v_card) == 400.0
+    model.set_defaults(300, 1.0)                                 # the default boldness applies when it has none
+    assert v_card.shown_wght() == 300.0 and drawn_at(v_card) == 300.0
+    model.set_adjust(v.key, 900, None)                           # its own boldness wins over the default
+    assert v_card.shown_wght() == 900.0 and drawn_at(v_card) == 900.0
+    a_card.weight_combo.setCurrentText("700")                    # a static font: nothing to re-render
+    assert a_card.shown_wght() is None and drawn_at(a_card) is None
+    assert page.cards[1] is v_card and page.cards[0] is a_card
+
+
+def test_material_card_takes_the_default_weight(faces):
+    a, b, v = faces
+    card = MaterialCard(MaterialRow(v), 0, 1, True, default_weight=700)
+    assert card.shown_wght() == 700.0 and card.adjust_button.text() == "Adjust"   # the default is not "its own"
+    card.update_from(MaterialRow(v, weight=200), 0, 1, True, default_weight=700)
+    assert card.shown_wght() == 200.0 and card.adjust_button.text() == "Adjust · boldness 200"
+
+
+# ----- missing characters, glyph warning ------------------------------------------------------------
+def test_missing_label_caps_the_list_and_keeps_it_all_in_the_tooltip(page_ab, model):
+    page = page_ab
+    cyrillic = "".join(chr(cp) for cp in range(0x430, 0x430 + MAX_MISSING_CHARS + 5))   # а б в … 25 letters
+    model.set_sample_text("ab " + cyrillic)
+    shown = " ".join(cyrillic[:MAX_MISSING_CHARS])
+    assert page.missing_label.text() == f"{MISSING_PREFIX}{shown} …"
+    assert page.missing_label.toolTip() == " ".join(cyrillic)
+    model.set_sample_text("ab " + cyrillic[:MAX_MISSING_CHARS])            # exactly the cap: no ellipsis
+    assert page.missing_label.text() == f"{MISSING_PREFIX}{shown}"
+    assert page.missing_label.toolTip() == shown
+    model.set_sample_text("ab")
+    assert page.missing_label.isHidden() and page.missing_label.toolTip() == ""
+
+
+def test_glyph_warning_shows_as_a_callout_above_the_table(qtbot, page_ab, model, monkeypatch):
+    page = page_ab
+    assert page.glyph_warning_label.isHidden() and model.glyph_warning() == ""
+    monkeypatch.setattr(model, "glyph_warning", lambda: "These fonts come close to the limit.")
+    model.recompute_plan_now()                                   # the estimate follows the plan
+    assert not page.glyph_warning_label.isHidden()
+    assert page.glyph_warning_label.text() == "These fonts come close to the limit."
+    assert page.glyph_warning_label.objectName() == "glyphWarning"
+    layout = page.table.parentWidget().layout()
+    assert layout.indexOf(page.glyph_warning_label) == layout.indexOf(page.table) - 1   # right above the table
+    monkeypatch.setattr(model, "glyph_warning", lambda: "")
+    page.refresh()
+    assert page.glyph_warning_label.isHidden() and page.glyph_warning_label.text() == ""
+    monkeypatch.delattr(model, "glyph_warning")
+    monkeypatch.delattr(ForgeModel, "glyph_warning")             # an older model without the API: no callout
+    page.refresh()
+    assert page.glyph_warning_label.isHidden()
+
+
+# ----- lock ----------------------------------------------------------------------------------------
+def _card_controls(card):
+    return [card.up_button, card.down_button, card.weight_combo, card.scale_spin]
+
+
+def test_locked_page_disables_the_controls_but_keeps_the_previews_live(qtbot, page_ab, model, faces):
+    a, b, v = faces
+    page = page_ab
+    a_card, b_card = page.cards
+    assert not page.is_locked() and not a_card.is_locked()
+    page.set_locked(True)
+    assert page.is_locked() and a_card.is_locked() and b_card.is_locked()
+    for card in page.cards:
+        assert not any(w.isEnabled() for w in _card_controls(card))
+    assert not page.supplier_combo("latin").isEnabled() and not page.supplier_combo("han").isEnabled()
+    assert not page.base_combo.isEnabled() and not page.default_weight_combo.isEnabled()
+    assert not page.default_scale_spin.isEnabled()
+    assert a_card.adjust_button.isEnabled() and page.advanced_button.isEnabled()   # looking is still allowed
+    a_card.down_button.click()
+    assert model.keys() == [a.key, b.key]                        # disabled: nothing moved
+    # the previews stay live: the sample text and the missing line keep following the model
+    model.set_sample_text("ab 한")
+    assert page.preview.sample_text() == "ab 한" and page.missing_label.text() == "Not covered by any font: 한"
+    # changes made elsewhere (a settings file, the tray) still reach the cards and the table, locked
+    model.set_adjust(b.key, 300, None)
+    assert b_card.weight_combo.currentText() == "300" and not b_card.weight_combo.isEnabled()
+    assert b_card.adjust_button.text() == "Adjust · boldness 300"
+    model.add(v)                                                 # rebuilt cards and table come out locked
+    assert [c.key for c in page.cards] == [a.key, b.key, v.key]
+    for card in page.cards:
+        assert card.is_locked() and not any(w.isEnabled() for w in _card_controls(card))
+    for g in page.table_groups():
+        assert not page.supplier_combo(g).isEnabled()
+    page.set_locked(False)
+    assert not page.is_locked()
+    first, second, third = page.cards
+    assert not first.up_button.isEnabled() and first.down_button.isEnabled()
+    assert second.up_button.isEnabled() and second.down_button.isEnabled()
+    assert third.up_button.isEnabled() and not third.down_button.isEnabled()
+    for card in page.cards:
+        assert card.weight_combo.isEnabled() and card.scale_spin.isEnabled()
+    for g in page.table_groups():
+        assert page.supplier_combo(g).isEnabled()
+    assert page.base_combo.isEnabled() and page.default_weight_combo.isEnabled() and page.default_scale_spin.isEnabled()
+    third.up_button.click()
+    assert model.keys() == [a.key, v.key, b.key]
+    page.set_locked(False)                                       # already unlocked: harmless
+    assert page.cards[0].down_button.isEnabled()
+
+
+def test_lock_with_no_fonts_keeps_the_base_combo_off(qtbot, model):
+    page = _page(qtbot, model)
+    page.set_locked(True)
+    page.set_locked(False)
+    assert not page.base_combo.isEnabled()                       # no rows: nothing to choose from
+    assert page.default_weight_combo.isEnabled() and page.default_scale_spin.isEnabled()

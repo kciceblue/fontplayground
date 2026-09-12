@@ -1,4 +1,5 @@
 import os
+import shutil
 import time
 from dataclasses import replace
 from pathlib import Path
@@ -6,10 +7,12 @@ from pathlib import Path
 import pytest
 
 from fontplayground.catalog.face import read_faces
+from fontplayground.engine.scripts import GROUP_IDS
 from fontplayground.engine.spec import ForgeError, ForgeReport, Plan
 from fontplayground.ui import model as model_module
 from fontplayground.ui import workers
-from fontplayground.ui.model import EMPTY_ERROR, ForgeModel, MaterialRow, clean_stale_results, stage_text
+from fontplayground.ui.model import (EMPTY_ERROR, GLYPH_NEAR_TEXT, ForgeModel, MaterialRow, clean_stale_results,
+                                     glyph_limit_text, stage_text)
 from fontplayground.ui.preview import DEFAULT_SAMPLE
 from tests.fixtures import cps, fake_face
 
@@ -159,7 +162,7 @@ def test_validity_wording_and_signal(qtbot, model, faces):
     model.set_style("")
     assert model.validity() == "Style name is empty."
     model.set_style("Regular")
-    bad = fake_face(cps("ab"), path="cff2.otf", family="Fixture Z", outline="CFF2")
+    bad = replace(c, family="Fixture Z", outline="CFF2")  # a real file (fixture C) that the engine cannot use
     model.add(bad)
     assert model.validity() == "Fixture Z Regular: CFF2 outlines are not supported"
     model.remove(bad.key)
@@ -248,15 +251,155 @@ def test_sample_text_missing_chars_and_suggestions(qtbot, model, faces):
     assert model.missing_sample_chars() == [] and model.suggestions() == []
 
 
-def test_set_catalog_refreshes_faces_after_a_rescan(qtbot, model, faces):
+def test_missing_sample_chars_never_count_invisible_characters(model, faces):
+    a, b, c = faces
+    # a zero-width joiner, a variation selector, a zero-width space, a soft hyphen and a bidi control
+    model.set_sample_text("a\u200d b\ufe0f\u200b\u00ad漢\u202a\n")
+    assert model.missing_sample_chars() == ["a", "b", "漢"]
+    model.add(a)
+    assert model.missing_sample_chars() == ["漢"]
+    model.set_sample_text("\u200d\ufe0f \t")
+    assert model.missing_sample_chars() == []
+
+
+def test_suggestions_pass_the_glyphs_the_tray_already_needs(model, faces):
+    a, b, c = faces
+    model.set_sample_text("a b漢 →→Ω")
+    main = replace(a, glyph_count=57_535)      # Main counts in full
+    big_c = replace(c, glyph_count=10_000)     # 10,000 × 0.8 + 57,535 = 65,535: still allowed next to Main alone
+    sym = fake_face(cps("→"), path="sym.ttf", family="Sym")
+    model.add(main)
+    model.set_catalog({main.key: main, b.key: b, big_c.key: big_c, sym.key: sym})
+    model.recompute_plan_now()
+    # C covers two of Ω → 漢; Sym (2 glyphs) and B (5 glyphs) cover one each: fewer glyphs first
+    assert [f.family for f in model.suggestions()] == ["Fixture C", "Sym", "Fixture B"]
+    model.add(b)                               # supplies 漢 and ，: two more glyphs are needed, so C would pass the limit
+    model.recompute_plan_now()
+    assert model.missing_sample_chars() == ["Ω", "→"]
+    assert [f.family for f in model.suggestions()] == ["Sym", "Fixture C"]
+
+
+def test_set_catalog_refreshes_changed_faces_and_drops_vanished_ones(qtbot, model, faces, slow_fake_forge):
     a, b, c = faces
     model.add(a)
-    rescanned = replace(a, mtime=a.mtime + 1)
-    with qtbot.waitSignal(model.materialsChanged):
-        model.set_catalog({rescanned.key: rescanned, b.key: b})
-    assert model.main is rescanned and model.catalog == {rescanned.key: rescanned, b.key: b}
-    with qtbot.assertNotEmitted(model.materialsChanged):
-        model.set_catalog({rescanned.key: rescanned})  # same objects: nothing to do
+    model.add(b)
+    model.set_pin("han", b.key)
+    model.set_base(b.key)
+    with qtbot.waitSignal(model.resultReady, timeout=10000):
+        model.combine()
+    try:
+        same = replace(a)  # a rescan that found the same font: equal by value, another object
+        with qtbot.waitSignal(model.materialsChanged):
+            model.set_catalog({same.key: same, b.key: b, c.key: c})
+        assert model.main is a and not model.is_stale             # nothing differed: not an edit
+        assert model.catalog == {same.key: same, b.key: b, c.key: c}
+        rescanned = replace(a, mtime=a.mtime + 1)
+        with qtbot.waitSignal(model.resultStale):
+            model.set_catalog({rescanned.key: rescanned, b.key: b})
+        assert model.main is rescanned and model.is_stale and model.keys() == [a.key, b.key]
+        # the catalog after a scan is complete: a material whose font is gone leaves the tray with its pins
+        assert model.family == "Fixture A Fixture B"
+        model.set_catalog({rescanned.key: rescanned, c.key: c})
+        assert model.keys() == [a.key] and model.pins["han"] is None and model.base_key is None
+        assert model.family == "Fixture A Forged"
+    finally:
+        _cleanup_result(model)
+
+
+def test_validity_flags_a_font_file_that_vanished(model, font_dir, tmp_path):
+    copy = tmp_path / "gone.ttf"
+    shutil.copyfile(font_dir / "A.ttf", copy)
+    (face,) = read_faces(copy)
+    model.add(face)
+    assert model.validity() == ""
+    copy.unlink()
+    model.recompute_plan_now()  # the next check (any change, or the plan) notices
+    assert model.validity() == "Fixture A Regular: the font file is no longer there"
+    assert model.combine() is False
+
+
+# ----- glyph budget ------------------------------------------------------------------------------
+def test_glyph_budget_warns_near_the_limit_and_blocks_past_it(qtbot, model, faces):
+    a, b, c = faces
+    seen = []
+    model.validityChanged.connect(seen.append)
+    assert model.glyph_estimate() == 0 and model.glyph_warning() == ""
+    main = replace(a, glyph_count=60_000)                # its 5 characters all come from Main: 1 + 60,000 × 0.8
+    with qtbot.waitSignal(model.planChanged, timeout=2000):
+        model.add(main)
+    assert model.glyph_estimate() == 48_001 and model.glyph_warning() == "" and model.validity() == ""
+    near = replace(b, glyph_count=40_000)                # supplies 漢 and ，, half its map: 40,000 × 0.5 × 0.8
+    model.add(near)
+    model.recompute_plan_now()
+    assert model.glyph_estimate() == 64_001
+    assert model.glyph_warning() == GLYPH_NEAR_TEXT == ("These fonts come close to the 65,535-glyph limit; if forging "
+                                                        "fails, remove a font or use a smaller build.")
+    assert model.validity() == "" and seen == [""]       # a warning, not a problem
+    model.remove(near.key)
+    model.add(replace(b, glyph_count=45_000))            # 18,000 more: 66,001
+    model.recompute_plan_now()
+    text = ("Together these fonts need about 66,001 glyphs; a font can hold 65,535. "
+            "Remove a font or use a smaller (regional) build.")
+    assert model.glyph_estimate() == 66_001 and glyph_limit_text(66_001) == text
+    assert model.validity() == text == model.glyph_warning() == seen[-1]
+    assert model.combine() is False                      # Next: Forge stays disabled
+    with qtbot.waitSignal(model.validityChanged, timeout=2000):
+        model.remove(b.key)                              # the debounced plan lifts it
+    assert model.validity() == "" and model.glyph_estimate() == 48_001 and model.glyph_warning() == ""
+    model.remove(main.key)
+    assert model.recompute_plan_now() is None and model.glyph_estimate() == 0 and model.glyph_warning() == ""
+
+
+# ----- reset -------------------------------------------------------------------------------------
+def test_reset_starts_over_but_keeps_the_sample_text_and_the_catalog(qtbot, model, faces, slow_fake_forge):
+    a, b, c = faces
+    catalog = {f.key: f for f in (a, b, c)}
+    model.set_catalog(catalog)
+    model.add(a)
+    model.add(b)
+    model.set_base(b.key)
+    model.set_pin("latin", b.key)
+    model.set_adjust(a.key, 500, 1.2)
+    model.set_defaults(700, 0.9)
+    model.set_family("Mine")
+    model.set_style("Heavy")
+    model.set_output("D:/out/x.ttf")
+    model.set_sample_text("keep me")
+    with qtbot.waitSignal(model.resultReady, timeout=10000):
+        model.combine()
+    model.set_defaults(600, 0.9)
+    assert model.is_stale and model.result_path is not None
+    signals = []
+    for name in ("materialsChanged", "namesChanged", "resetDone", "sampleChanged"):
+        getattr(model, name).connect(lambda *args, n=name: signals.append(n))
+    model.planChanged.connect(lambda p: signals.append(("plan", p)))
+    model.validityChanged.connect(lambda t: signals.append(("validity", t)))
+    model.reset()
+    assert signals == ["materialsChanged", "namesChanged", ("plan", None), ("validity", EMPTY_ERROR), "resetDone"]
+    assert model.rows == [] and model.main is None and model.base_key is None and model.base is None
+    assert model.pins == {g: None for g in GROUP_IDS}
+    assert (model.default_weight, model.default_scale) == (None, 1.0)
+    docs = Path.home() / "Documents"
+    assert (model.family, model.style, model.output) == ("Forged", "Regular", str(docs / "Forged-Regular.ttf"))
+    assert model.names_edited == {"family": False, "style": False, "output": False}
+    assert model.result_path is None and model.result_report is None and not model.is_stale and not model.is_busy()
+    assert model.plan is None and model.glyph_estimate() == 0 and model.validity() == EMPTY_ERROR
+    assert model.sample_text == "keep me" and model.catalog == catalog
+    qtbot.wait(300)
+    assert signals[-1] == "resetDone"  # no pending plan fires afterwards
+    model.add(c)
+    assert (model.family, model.style) == ("Fixture C Forged", "Regular")  # proposed again, not "Mine"
+
+
+def test_reset_cancels_a_running_combine(qtbot, model, faces, forge_waits_for_cancel):
+    a, b, c = faces
+    model.add(a)
+    model.combine()
+    worker = model.worker
+    with qtbot.waitSignal(model.resultCancelled, timeout=15000):
+        model.reset()
+    qtbot.waitUntil(lambda: not model.is_busy(), timeout=15000)
+    assert model.rows == [] and model.result_path is None and not os.path.exists(worker.output_path)
 
 
 # ----- settings ----------------------------------------------------------------------------------
@@ -320,6 +463,55 @@ def test_from_settings_emits_the_signals_pages_rely_on(qtbot, model, faces):
                             model.planChanged], timeout=2000):
         model.from_settings(d, {a.key: a})
     assert model.keys() == [a.key] and model.sample_text == "zz" and model.validity() == ""
+
+
+def test_from_settings_skips_malformed_entries_and_defaults_the_rest(model, faces):
+    a, b, c = faces
+    catalog = {f.key: f for f in (a, b, c)}
+    d = {
+        "materials": [
+            {"path": a.path, "index": "0"},                         # an index given as a string still finds the font
+            "junk",                                                 # not a material
+            {"path": b.path, "index": "zero"},                      # an index that is not a number: skipped
+            {"path": 5, "index": 0},                                # a path that is not a string: skipped
+            {"path": c.path, "index": c.index, "weight": "700", "scale": "big"},
+        ],
+        "base_index": "4",                                          # counts the skipped entries, like a vanished font
+        "script_rules": "nope",
+        "default_weight": "500",
+        "default_scale": "wide",
+        "pins": {"latin": a.path,                                   # a pin given as a string
+                 "han": [a.path],                                   # too short
+                 "hangul": [a.path, "0"],                           # a stored index as a string: fine
+                 "kana": None, "bogus": [a.path, 0], "greek": 7},
+        "family_name": "Typed", "style_name": 12, "output_path": ["not", "a", "path"],
+        "names_edited": "yes",                                      # not a dict: the old-file heuristic applies
+        "sample_text": 5,
+    }
+    model.from_settings(d, catalog)
+    assert model.keys() == [a.key, c.key]
+    assert model.row(c.key).weight == 700 and model.row(c.key).scale is None
+    assert model.base_key == c.key and (model.default_weight, model.default_scale) == (500, 1.0)
+    assert model.pins["hangul"] == a.key and model.pins["latin"] is None and model.pins["han"] is None
+    assert model.pins["kana"] is None and model.pins["greek"] is None and "bogus" not in model.pins
+    assert model.family == "Typed" and model.names_edited["family"]
+    assert model.style == "Regular" and not model.names_edited["style"]
+    assert model.output == str(Path.home() / "Documents" / "Typed-Regular.ttf") and not model.names_edited["output"]
+    assert model.sample_text == DEFAULT_SAMPLE and model.validity() == ""
+
+
+@pytest.mark.parametrize("bad", [
+    None, "text", [], {"materials": "not a list"}, {"materials": {"path": "x", "index": 0}}, {"materials": [None, 3]},
+    {"materials": None, "pins": "latin", "names_edited": [], "script_rules": [1, 2], "base_index": None},
+    {"base_index": -3, "default_scale": float("nan"), "default_weight": True, "family_name": None},
+])
+def test_from_settings_never_raises_on_malformed_input(model, faces, bad):
+    a, b, c = faces
+    model.add(b)
+    model.from_settings(bad, {f.key: f for f in (a, b, c)})
+    assert model.keys() == [] and model.validity() == EMPTY_ERROR and model.pins == {g: None for g in GROUP_IDS}
+    assert (model.family, model.style) == ("Forged", "Regular")
+    assert (model.default_weight, model.default_scale) == (None, 1.0)
 
 
 # ----- combine -----------------------------------------------------------------------------------
@@ -423,7 +615,9 @@ def test_combine_refuses_an_invalid_spec_and_discards_the_previous_result(qtbot,
 
 
 def test_combine_failure_emits_result_failed(qtbot, model, tmp_path):
-    ghost = fake_face(cps("ab"), path=str(tmp_path / "missing.ttf"), family="Ghost")
+    broken = tmp_path / "broken.ttf"
+    broken.write_bytes(b"not a font")  # on disk, so the spec is valid, but unreadable
+    ghost = fake_face(cps("ab"), path=str(broken), family="Ghost")
     model.add(ghost)
     with qtbot.waitSignal(model.resultFailed, timeout=60000) as blocker:
         assert model.combine()

@@ -3,15 +3,22 @@ from pathlib import Path
 
 import pytest
 
-from fontplayground.engine.scripts import GROUP_IDS
+from fontplayground.engine.merge import MAX_GLYPHS
+from fontplayground.engine.scripts import GROUP_IDS, group_of
+from fontplayground.engine.spec import MaterialSpec, Plan
 from fontplayground.ui import smart
-from fontplayground.ui.smart import (default_family_name, default_output_path, default_style, group_counts,
+from fontplayground.ui.smart import (GLYPH_WARN, default_family_name, default_output_path, default_style,
+                                     estimate_glyphs, exceeds_glyph_budget, face_glyph_share, group_counts,
                                      resolve_rules, smart_supplier, strip_vendor, suggest_materials)
 from tests.fixtures import cps, fake_face
 
 LATIN = set(range(0x20, 0x250))            # 560 code points, all in the "latin" group
 HAN = set(range(0x4E00, 0x4E00 + 3000))    # 3000 code points of Han
 HANGUL = set(range(0xAC00, 0xAC00 + 100))
+# 1,605 code points of the "symbols" group (arrows, maths, box drawing, dingbats…): punctuation & symbols
+SYMBOLS = [cp for cp in range(0x2190, 0x2800) if group_of(cp) == "symbols"]
+# 28,000 Han code points: the URO block, Extension A and the start of Extension B
+HAN_28000 = set(range(0x4E00, 0x4E00 + 20992)) | set(range(0x3400, 0x3400 + 6592)) | set(range(0x20000, 0x20000 + 416))
 
 
 @pytest.fixture
@@ -50,18 +57,42 @@ def test_group_counts_are_cached_per_face_key_and_size(segoe):
 
 
 # ----- suppliers ---------------------------------------------------------------------------------
-def test_han_goes_to_yahei_and_latin_stays_with_segoe_in_both_orders(segoe, yahei):
+def test_han_goes_to_yahei_and_latin_stays_with_segoe_when_segoe_is_main(segoe, yahei):
     counts = group_counts([segoe, yahei])
-    for order in ([segoe.key, yahei.key], [yahei.key, segoe.key]):
-        assert smart_supplier("han", counts, order) == yahei.key
-        assert smart_supplier("latin", counts, order) == segoe.key
-
-
-def test_supplier_is_the_first_material_with_at_least_half_the_best_count(segoe, yahei):
-    counts = group_counts([segoe, yahei])
-    counts[yahei.key]["latin"] = 280  # exactly half of Segoe's 560
-    assert smart_supplier("latin", counts, [yahei.key, segoe.key]) == yahei.key
+    assert smart_supplier("han", counts, [segoe.key, yahei.key]) == yahei.key    # 30 Han < 3000 / 10: Main lets go
     assert smart_supplier("latin", counts, [segoe.key, yahei.key]) == segoe.key
+    assert smart_supplier("han", counts, [yahei.key, segoe.key]) == yahei.key
+    assert smart_supplier("latin", counts, [yahei.key, segoe.key]) == yahei.key  # as Main, 200 Latin >= 560 / 10: kept
+
+
+def test_a_material_below_main_needs_half_the_best_count(segoe, yahei):
+    hangul = fake_face(HANGUL, path="hangul.ttf", family="Hangul Only")  # a Main that covers no Latin at all
+    counts = group_counts([hangul, segoe, yahei])
+    counts[yahei.key]["latin"] = 280  # exactly half of Segoe's 560
+    assert smart_supplier("latin", counts, [hangul.key, yahei.key, segoe.key]) == yahei.key
+    counts[yahei.key]["latin"] = 279
+    assert smart_supplier("latin", counts, [hangul.key, yahei.key, segoe.key]) == segoe.key
+    assert smart_supplier("latin", counts, [hangul.key, segoe.key, yahei.key]) == segoe.key
+
+
+def test_main_keeps_a_group_it_covers_a_tenth_as_well_as_the_best_material():
+    georgia = fake_face(LATIN | set(SYMBOLS[:120]), path="georgia.ttf", family="Georgia")   # 120 punctuation & symbols
+    cjk = fake_face(HAN_28000 | set(SYMBOLS[:1200]), path="cjk.ttf", family="CJK")          # 1,200 of them, 28,000 Han
+    counts = group_counts([georgia, cjk])
+    assert counts[georgia.key]["symbols"] == 120 and counts[georgia.key]["han"] == 0
+    assert counts[cjk.key]["symbols"] == 1200 and counts[cjk.key]["han"] == 28000
+    order = [georgia.key, cjk.key]
+    assert smart_supplier("symbols", counts, order) == georgia.key   # Main: 120 >= 1200 / 10
+    assert smart_supplier("latin", counts, order) == georgia.key
+    assert smart_supplier("han", counts, order) == cjk.key           # Georgia has no Han at all
+    counts[georgia.key]["han"] = 2
+    assert smart_supplier("han", counts, order) == cjk.key           # a token Han range: 2 < 28000 / 10
+    counts[cjk.key]["symbols"] = 1201
+    assert smart_supplier("symbols", counts, order) == cjk.key       # just under a tenth: the CJK font takes over
+    counts[cjk.key]["symbols"] = 1200
+    third = ("third.ttf", 0)                                          # only the first key gets the Main bias
+    assert smart_supplier("symbols", counts, [third, georgia.key, cjk.key]) == cjk.key
+    assert smart_supplier("symbols", counts, [cjk.key, georgia.key]) == cjk.key
 
 
 def test_supplier_is_none_when_nobody_covers_the_group(segoe, yahei):
@@ -182,3 +213,52 @@ def test_suggest_materials_keeps_catalog_order_on_ties():
     second = fake_face(cps("x"), path="second.ttf", family="Second")
     assert [f.family for f in suggest_materials(cps("x"), [first, second], None)] == ["First", "Second"]
     assert [f.family for f in suggest_materials(cps("x"), [second, first], None)] == ["Second", "First"]
+
+
+def test_suggest_materials_prefers_fewer_glyphs_on_equal_coverage():
+    lean = replace(fake_face(cps("x"), path="lean.ttf", family="Lean"), glyph_count=50)
+    heavy = replace(fake_face(cps("x"), path="heavy.ttf", family="Heavy"), glyph_count=500)
+    assert [f.family for f in suggest_materials(cps("x"), [heavy, lean], None)] == ["Lean", "Heavy"]
+    assert [f.family for f in suggest_materials(cps("x"), [lean, heavy], None)] == ["Lean", "Heavy"]
+    bigger = fake_face(cps("xy"), path="bigger.ttf", family="Bigger")  # coverage still comes first
+    assert [f.family for f in suggest_materials(cps("xy"), [heavy, lean, bigger], None)] == ["Bigger", "Lean", "Heavy"]
+
+
+def test_suggest_materials_demotes_faces_that_would_pass_the_glyph_limit():
+    catalog = _catalog()
+    huge = replace(fake_face(HANGUL | HAN, path="huge.ttf", family="Huge"), glyph_count=60_000)
+    missing = HANGUL | {0x4E00, 0x4E01} | cps("☺")
+    families = lambda faces: [f.family for f in faces]  # noqa: E731
+    # Huge and Korean both cover 102 characters: the smaller face (Korean Regular, 101 glyphs) ranks first
+    got = suggest_materials(missing, catalog + [huge], None, limit=4)
+    assert families(got) == ["Korean", "Huge", "Han Font", "Symbols"]
+    # 60,000 × 0.8 + 17,535 = 65,535 is still allowed; one glyph more and Huge goes to the end
+    assert not exceeds_glyph_budget(huge, MAX_GLYPHS - 48_000) and exceeds_glyph_budget(huge, MAX_GLYPHS - 48_000 + 1)
+    assert families(suggest_materials(missing, catalog + [huge], None, limit=4, main_glyphs=17_535))[1] == "Huge"
+    assert families(suggest_materials(missing, catalog + [huge], None, limit=4, main_glyphs=20_000)) == [
+        "Korean", "Han Font", "Symbols", "Huge"]
+    got = suggest_materials(missing, catalog + [huge], None, main_glyphs=20_000)
+    assert families(got) == ["Korean", "Han Font", "Symbols"]  # limit 3: the demoted face falls off the list
+    assert families(suggest_materials(HAN, [huge], None, main_glyphs=20_000)) == ["Huge"]  # demoted, not hidden
+
+
+# ----- glyph budget ------------------------------------------------------------------------------
+def test_glyph_share_scales_a_face_by_its_planned_characters_and_the_variant_factor():
+    face = replace(fake_face(set(range(100)), path="big.ttf"), glyph_count=1000)
+    assert face_glyph_share(face, 100) == 800 and face_glyph_share(face, 50) == 400 and face_glyph_share(face, 0) == 0
+    small = fake_face(cps("abc"), path="small.ttf")                        # 4 glyphs for 3 characters
+    assert face_glyph_share(small, 1) == 1                                 # round(4 / 3 × 0.8)
+    empty = replace(fake_face(set(), path="empty.ttf"), glyph_count=7)     # no character map: no division by zero
+    assert face_glyph_share(empty, 0) == 0
+
+
+def test_estimate_glyphs_adds_notdef_and_every_material_share():
+    big = replace(fake_face(set(range(100)), path="big.ttf"), glyph_count=1000)
+    small = fake_face(cps("abc"), path="small.ttf")
+    empty = replace(fake_face(set(), path="empty.ttf"), glyph_count=7)
+    plan = Plan({0: set(range(50)), 1: cps("a"), 2: set()}, {})
+    assert estimate_glyphs([MaterialSpec(big), MaterialSpec(small), MaterialSpec(empty)], plan) == 1 + 400 + 1 + 0
+    assert estimate_glyphs([big, small, empty], plan) == 402                       # bare faces work too
+    assert estimate_glyphs([big, small], Plan({0: set(range(100))}, {})) == 801   # no plan entry: nothing planned
+    assert estimate_glyphs([], Plan({}, {})) == 1
+    assert GLYPH_WARN == 58_000 and GLYPH_WARN < MAX_GLYPHS == 65_535

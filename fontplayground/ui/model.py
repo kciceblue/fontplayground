@@ -15,11 +15,13 @@ from uuid import uuid4
 from PySide6.QtCore import QObject, QTimer, Signal
 
 from fontplayground.catalog.face import FontFace
+from fontplayground.engine.merge import MAX_GLYPHS
 from fontplayground.engine.planner import plan as plan_spec
 from fontplayground.engine.scripts import GROUP_IDS
 from fontplayground.engine.spec import ForgeSpec, MaterialSpec, Plan
 from fontplayground.ui import smart
 from fontplayground.ui.preview import DEFAULT_SAMPLE, font_loader
+from fontplayground.ui.textutil import visible_chars
 from fontplayground.ui.workers import CombineWorker
 
 FaceKey = tuple[str, int]
@@ -29,6 +31,19 @@ RESULT_DIR = Path(tempfile.gettempdir()) / "fontplayground"   # combine results 
 RESULT_GLOB = "forged-*.ttf"
 EMPTY_ERROR = "Add at least one font."
 NAME_FIELDS = ("family", "style", "output")
+GLYPH_NEAR_TEXT = (f"These fonts come close to the {MAX_GLYPHS:,}-glyph limit; if forging fails, remove a font or use "
+                   "a smaller build.")
+
+
+def glyph_limit_text(estimate: int) -> str:
+    """The validity problem shown when the estimated glyph count passes the TrueType limit."""
+    return (f"Together these fonts need about {estimate:,} glyphs; a font can hold {MAX_GLYPHS:,}. "
+            "Remove a font or use a smaller (regional) build.")
+
+
+def missing_file_text(face: FontFace) -> str:
+    """The validity problem shown when a material's file has vanished since the scan."""
+    return f"{face.display_name}: the font file is no longer there"
 
 STAGE_TEXT = {
     "plan": "Deciding which font supplies each character…",
@@ -66,6 +81,74 @@ class MaterialRow:
     scale: float | None = None  # None -> the model's default scale
 
 
+# ----- tolerant settings parsing ---------------------------------------------------------------
+def _as_int(value) -> int | None:
+    """An int from a stored value (ints and digit strings; bools and everything else are None)."""
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, str):
+        try:
+            return int(value.strip())
+        except ValueError:
+            return None
+    return None
+
+
+def _as_float(value) -> float | None:
+    """A finite float from a stored value (numbers and numeric strings; bools and everything else are None)."""
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float, str)):
+        try:
+            number = float(value)
+        except ValueError:
+            return None
+        return number if number == number and number not in (float("inf"), float("-inf")) else None
+    return None
+
+
+def _as_key(value) -> FaceKey | None:
+    """(path, index) from a stored [path, index] pair; None for anything else (a bare string, a short list…)."""
+    if isinstance(value, (list, tuple)) and len(value) == 2 and isinstance(value[0], str):
+        index = _as_int(value[1])
+        if index is not None:
+            return (value[0], index)
+    return None
+
+
+def _clean_spec_dict(d: dict) -> dict:
+    """The ForgeSpec part of a settings dict with every malformed entry skipped or defaulted, safe for from_dict.
+
+    A malformed material keeps its position as a key no catalog holds, so from_dict drops it the way it drops a
+    font that is gone and the stored base_index and script_rules still point at the right materials.
+    """
+    materials = []
+    for m in (d.get("materials") if isinstance(d.get("materials"), list) else []):
+        key = _as_key((m.get("path"), m.get("index"))) if isinstance(m, dict) else None
+        if key is None:
+            materials.append({"path": None, "index": None, "weight": None, "scale": None})
+            continue
+        materials.append({"path": key[0], "index": key[1], "weight": _as_int(m.get("weight")),
+                          "scale": _as_float(m.get("scale"))})
+    rules = d.get("script_rules")
+    rules = {g: _as_int(i) for g, i in rules.items() if isinstance(g, str)} if isinstance(rules, dict) else {}
+    clean = {
+        "materials": materials,
+        "base_index": _as_int(d.get("base_index")) or 0,
+        "script_rules": rules,
+        "default_weight": _as_int(d.get("default_weight")),
+        "default_scale": _as_float(d.get("default_scale")),
+    }
+    if clean["default_scale"] is None:
+        clean["default_scale"] = 1.0
+    for field in ("family_name", "style_name"):
+        if isinstance(d.get(field), str):
+            clean[field] = d[field]
+    return clean
+
+
 class ForgeModel(QObject):
     materialsChanged = Signal()        # rows, order, base, pins, adjustments or defaults changed
     planChanged = Signal(object)       # Plan | None, after the debounce
@@ -78,6 +161,7 @@ class ForgeModel(QObject):
     resultCancelled = Signal()
     resultStale = Signal()             # something changed after a result was produced
     namesChanged = Signal()            # family, style or output path changed (by the user or automatically)
+    resetDone = Signal()               # reset() finished: the forge state is back to a fresh start
 
     def __init__(self, parent: QObject | None = None) -> None:
         super().__init__(parent)
@@ -93,6 +177,7 @@ class ForgeModel(QObject):
         self._sample_text = DEFAULT_SAMPLE
         self._catalog: dict[FaceKey, FontFace] = {}
         self._plan: Plan | None = None
+        self._glyph_estimate = 0                               # from the current plan; 0 without one
         self._plan_timer = QTimer(self)
         self._plan_timer.setSingleShot(True)
         self._plan_timer.setInterval(PLAN_DEBOUNCE_MS)
@@ -274,16 +359,59 @@ class ForgeModel(QObject):
         return True
 
     def set_catalog(self, faces_by_key: dict[FaceKey, FontFace]) -> None:
-        """Remember the scanned faces (for suggestions) and refresh the tray's faces from them after a rescan."""
+        """Remember the scanned faces (for suggestions) and align the tray with them after a rescan.
+
+        The catalog after a scan is complete: a row whose font changed on disk gets the new face, and a row
+        whose font is no longer in the catalog is dropped (with its pins). Either counts as an edit. When
+        nothing differs, only materialsChanged is emitted (the suggestions may differ) — the serial is not
+        bumped and a result does not go stale.
+        """
         self._catalog = dict(faces_by_key)
-        refreshed = False
+        kept: list[MaterialRow] = []
+        edited = False
         for row in self._rows:
             face = self._catalog.get(row.face.key)
-            if face is not None and face is not row.face:
+            if face is None:
+                edited = True
+                continue
+            if face != row.face:  # a frozen dataclass: a rescan that found the same font yields an equal face
                 row.face = face
-                refreshed = True
-        if refreshed:
-            self._materials_edited()
+                edited = True
+            kept.append(row)
+        if not edited:
+            self.materialsChanged.emit()
+            return
+        dropped = {r.face.key for r in self._rows} - {r.face.key for r in kept}
+        self._rows = kept
+        if self._base_key in dropped:
+            self._base_key = None
+        self._pins = {g: (None if k in dropped else k) for g, k in self._pins.items()}
+        self._materials_edited()
+
+    def reset(self) -> None:
+        """Start over: forget the materials, rules, adjustments, names and result. The sample text and the catalog stay.
+
+        A running combine is cancelled. Emits materialsChanged, namesChanged, planChanged(None), validityChanged
+        (when the text changes) and finally resetDone.
+        """
+        self._plan_timer.stop()
+        self.cancel()
+        self.discard_result()
+        self._rows = []
+        self._base_key = None
+        self._pins = {g: None for g in GROUP_IDS}
+        self._default_weight, self._default_scale = None, 1.0
+        self._edited = {name: False for name in NAME_FIELDS}
+        auto = self._auto_names()
+        self._family, self._style, self._output = auto["family"], auto["style"], auto["output"]
+        self._plan = None
+        self._glyph_estimate = 0
+        self._serial += 1  # a combine still finishing belongs to the old state
+        self.materialsChanged.emit()
+        self.namesChanged.emit()
+        self.planChanged.emit(None)
+        self._revalidate()
+        self.resetDone.emit()
 
     # ----- names and sample -----
     def set_family(self, text: str, by_user: bool = True) -> None:
@@ -302,14 +430,33 @@ class ForgeModel(QObject):
         self.sampleChanged.emit(text)
 
     def missing_sample_chars(self) -> list[str]:
-        """Non-space sample characters no material covers, sorted, without duplicates."""
+        """Visible sample characters no material covers, sorted, without duplicates.
+
+        Whitespace, joiners, variation selectors and other invisible characters (textutil.is_ignorable) never count.
+        """
         covered: set[int] = set().union(*(r.face.codepoints for r in self._rows)) if self._rows else set()
-        return sorted({c for c in self._sample_text if not c.isspace() and ord(c) not in covered})
+        return [c for c in visible_chars(self._sample_text) if ord(c) not in covered]
 
     def suggestions(self, limit: int = 3) -> list[FontFace]:
+        """Catalog faces worth adding for the missing sample characters.
+
+        smart.suggest_materials with the glyph budget the tray already needs (_glyphs_needed), so a face that
+        would pass the 65,535-glyph limit ranks last.
+        """
         missing = {ord(c) for c in self.missing_sample_chars()}
         return smart.suggest_materials(missing, self._catalog.values(), self.main, limit=limit,
-                                       exclude_keys=self.keys())
+                                       exclude_keys=self.keys(), main_glyphs=self._glyphs_needed())
+
+    def _glyphs_needed(self) -> int:
+        """Main's full glyph count plus what the plan takes from every other material (nothing without a plan)."""
+        if self.main is None:
+            return 0
+        total = self.main.glyph_count
+        if self._plan is not None:
+            for i, row in enumerate(self._rows):
+                if i > 0:
+                    total += smart.face_glyph_share(row.face, len(self._plan.assignments.get(i, ())))
+        return total
 
     # ----- spec, validity, plan -----
     def script_rules(self) -> dict[str, int | None]:
@@ -331,10 +478,28 @@ class ForgeModel(QObject):
         """"" when the spec can be forged, else the first problem in plain words."""
         return self._validity
 
+    def glyph_estimate(self) -> int:
+        """Estimated glyphs in the forged font, from the current plan (smart.estimate_glyphs); 0 without a plan."""
+        return self._glyph_estimate
+
+    def glyph_warning(self) -> str:
+        """"" when the glyph budget is fine; the validity problem past MAX_GLYPHS; a softer note past GLYPH_WARN."""
+        if self._glyph_estimate > MAX_GLYPHS:
+            return glyph_limit_text(self._glyph_estimate)
+        if self._glyph_estimate > smart.GLYPH_WARN:
+            return GLYPH_NEAR_TEXT
+        return ""
+
     def recompute_plan_now(self) -> Plan | None:
-        """Compute the plan immediately (the debounce timer calls this; tests may too) and emit planChanged."""
+        """Compute the plan immediately (the debounce timer calls this; tests may too) and emit planChanged.
+
+        The glyph estimate follows the plan, so the validity is checked again first: validityChanged fires
+        before planChanged when the budget verdict changed.
+        """
         self._plan_timer.stop()
         self._plan = plan_spec(self.build_spec()) if self._rows else None
+        self._glyph_estimate = smart.estimate_glyphs(self._rows, self._plan) if self._plan is not None else 0
+        self._revalidate()
         self.planChanged.emit(self._plan)
         return self._plan
 
@@ -404,30 +569,41 @@ class ForgeModel(QObject):
         return d
 
     def from_settings(self, d: dict, faces_by_key: dict[FaceKey, FontFace]) -> None:
-        """Restore a to_settings() dict; materials missing from `faces_by_key` are dropped."""
-        spec = ForgeSpec.from_dict(d, faces_by_key)
+        """Restore a to_settings() dict; materials missing from `faces_by_key` are dropped.
+
+        Never raises on a malformed dict (hand-edited or damaged): entries of the wrong shape are skipped and
+        everything else falls back to its default, as if it had not been stored.
+        """
+        d = d if isinstance(d, dict) else {}
+        spec = ForgeSpec.from_dict(_clean_spec_dict(d), faces_by_key)
         self._rows = [MaterialRow(m.face, m.weight, m.scale) for m in spec.materials]
         self._base_key = self._rows[spec.base_index].face.key if self._rows and spec.base_index > 0 else None
         self._default_weight, self._default_scale = spec.default_weight, float(spec.default_scale)
         self._pins = {g: None for g in GROUP_IDS}
+        pins = d.get("pins")
         if "pins" in d:
-            for g, k in (d.get("pins") or {}).items():
-                if g in self._pins and k is not None and self.has((str(k[0]), int(k[1]))):
-                    self._pins[g] = (str(k[0]), int(k[1]))
+            for g, k in (pins.items() if isinstance(pins, dict) else ()):
+                key = _as_key(k)
+                if g in self._pins and key is not None and self.has(key):
+                    self._pins[g] = key
         else:  # older files: every explicit rule was a pin
             for g, i in spec.script_rules.items():
                 if g in self._pins and i is not None and 0 <= i < len(self._rows):
                     self._pins[g] = self._rows[i].face.key
-        stored = {"family": spec.family_name, "style": spec.style_name, "output": d.get("output_path")}
+        stored = {name: (value if isinstance(value, str) else None)
+                  for name, value in (("family", d.get("family_name")), ("style", d.get("style_name")),
+                                      ("output", d.get("output_path")))}
         auto = self._auto_names()
         edited = d.get("names_edited")
+        if not isinstance(edited, dict):
+            edited = None
         for name in NAME_FIELDS:
             value = stored[name]
             if edited is not None:
                 self._edited[name] = bool(edited.get(name, False))
             else:  # older files: a value that differs from what the app would propose was typed by the user
-                self._edited[name] = value is not None and str(value) != auto[name]
-            setattr(self, f"_{name}", str(value) if self._edited[name] and value is not None else auto[name])
+                self._edited[name] = value is not None and value != auto[name]
+            setattr(self, f"_{name}", value if self._edited[name] and value is not None else auto[name])
         if self._edited["family"] or self._edited["style"]:
             if not self._edited["output"]:
                 self._output = str(smart.default_output_path(self._family, self._style))
@@ -466,8 +642,15 @@ class ForgeModel(QObject):
     def _compute_validity(self) -> str:
         if not self._rows:
             return EMPTY_ERROR
+        for row in self._rows:  # the file may have vanished since the scan
+            if not Path(row.face.path).is_file():
+                return missing_file_text(row.face)
         errors = self.build_spec().validate()
-        return errors[0] if errors else ""
+        if errors:
+            return errors[0]
+        if self._glyph_estimate > MAX_GLYPHS:
+            return glyph_limit_text(self._glyph_estimate)
+        return ""
 
     def _mark_stale(self) -> None:
         if self.result_path is not None and not self._stale:

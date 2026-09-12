@@ -86,6 +86,7 @@ class StepRail(QWidget):
         self.menu_button.setToolTip("More")
         self.menu_button.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
         self.menu_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.menu_button.setFocusPolicy(Qt.FocusPolicy.NoFocus)   # the ⋯ never steals focus from the page
         self.menu = QMenu(self.menu_button)
         self.rescan_action = QAction("Rescan fonts", self)
         self.add_folder_action = QAction("Add folder…", self)

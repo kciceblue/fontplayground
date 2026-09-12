@@ -21,17 +21,20 @@ from PySide6.QtWidgets import (QFileDialog, QFormLayout, QFrame, QHBoxLayout, QL
                                QVBoxLayout, QWidget)
 
 from fontplayground.catalog.face import read_faces
-from fontplayground.engine.scripts import LABELS
-from fontplayground.engine.spec import MaterialReport
+from fontplayground.engine.planner import plan as plan_spec
+from fontplayground.engine.scripts import GROUP_IDS, LABELS, group_of
+from fontplayground.engine.spec import MaterialReport, Plan
 from fontplayground.ui import install
 from fontplayground.ui.model import ForgeModel
 from fontplayground.ui.preview import PreviewWidget
 
 FaceKey = tuple[str, int]
+Tally = dict[str, int]        # group id -> characters a material supplied in that group
 
 STATE_READY, STATE_FORGING, STATE_RESULT = range(3)   # indices into ForgePage.stack
 COLUMN_MAX_WIDTH = 760
-MAX_SUMMARY_GROUPS = 4        # scripts named per material in the summary sentence before "…"
+MAX_SUMMARY_GROUPS = 4        # entries per material in the summary sentence; the last one is "…" when cut short
+MIN_SUMMARY_SHARE = 0.01      # a group below this share of a material's characters is left out of the sentence
 MAX_MISSING_CHARS = 20        # missing characters listed before "…" (the tooltip has them all)
 MAX_BUTTON_PATH = 44          # longer paths are shown as '~\…\name.ttf' on the primary button
 FONT_FILTER = "TrueType font (*.ttf)"
@@ -101,19 +104,52 @@ def compact_path(path: str, max_len: int = MAX_BUTTON_PATH) -> str:
     return parts[0].rstrip(os.sep) + os.sep + "…" + os.sep + parts[-1]
 
 
-def supplied_text(material: MaterialReport, limit: int | None = MAX_SUMMARY_GROUPS) -> str:
-    """'Segoe UI Regular supplied Latin, Greek …' for one material of the report."""
-    labels = [LABELS.get(g, g) for g in material.groups]
+def plan_tallies(plan: Plan) -> list[Tally]:
+    """Per material (plan index order): how many characters it supplies in each script group."""
+    tallies: list[Tally] = []
+    for i in sorted(plan.assignments):
+        tally: Tally = {}
+        for cp in plan.assignments[i]:
+            g = group_of(cp)
+            tally[g] = tally.get(g, 0) + 1
+        tallies.append(tally)
+    return tallies
+
+
+def ranked_groups(groups: list[str], tally: Tally | None, min_share: float = MIN_SUMMARY_SHARE) -> list[str]:
+    """The report's groups ordered by how many characters the material supplied in each (largest first, GROUPS
+    order on ties), without those below `min_share` of the material's characters. No tally: the order as given."""
+    if not tally:
+        return list(groups)
+    total = sum(tally.values())
+    ranked = sorted(groups, key=lambda g: (-tally.get(g, 0), GROUP_IDS.index(g) if g in GROUP_IDS else len(GROUP_IDS)))
+    if total <= 0:
+        return ranked
+    return [g for g in ranked if tally.get(g, 0) >= min_share * total]
+
+
+def supplied_text(material: MaterialReport, tally: Tally | None = None, limit: int | None = MAX_SUMMARY_GROUPS,
+                  min_share: float = MIN_SUMMARY_SHARE) -> str:
+    """'Microsoft YaHei Regular supplied Han, CJK symbols & fullwidth, Kana, …' for one material of the report.
+
+    With a tally the groups come biggest first and the small ones (< min_share) are dropped; `limit` caps the
+    entries, the last being '…' when there were more. limit=None and min_share=0 give the complete list.
+    """
+    labels = [LABELS.get(g, g) for g in ranked_groups(material.groups, tally, min_share)]
     if not labels:
         return f"{material.name} supplied nothing"
     if limit is not None and len(labels) > limit:
-        return f"{material.name} supplied {', '.join(labels[:limit])} …"
+        labels = labels[:max(limit - 1, 0)] + ["…"]
     return f"{material.name} supplied {', '.join(labels)}"
 
 
-def summary_sentence(materials: list[MaterialReport], limit: int | None = MAX_SUMMARY_GROUPS) -> str:
-    """The materials joined with ' · ': who supplied which scripts."""
-    return " · ".join(supplied_text(m, limit) for m in materials)
+def summary_sentence(materials: list[MaterialReport], tallies: list[Tally] | None = None,
+                     limit: int | None = MAX_SUMMARY_GROUPS, min_share: float = MIN_SUMMARY_SHARE) -> str:
+    """The materials joined with ' · ': who supplied which scripts (tallies: one per material, same order)."""
+    if tallies is not None and len(tallies) != len(materials):
+        tallies = None
+    return " · ".join(supplied_text(m, tallies[i] if tallies is not None else None, limit, min_share)
+                      for i, m in enumerate(materials))
 
 
 def listed_chars(chars: list[str], limit: int = MAX_MISSING_CHARS) -> str:
@@ -141,11 +177,14 @@ class ForgePage(QWidget):
         self._syncing = False                              # names are being copied model -> edits
         self._saved_for: tuple[str | None, str] | None = None   # (result path, output path) of the last save
         self._installed_name: str | None = None            # full name of the font installed from this page
+        self._written: set[str] = set()                    # output paths this page wrote (no overwrite question)
         self._shown_result: str | None = None              # result path the preview currently shows
         self._last_error: str | None = None                # first line of the last failure
         self._error_detail: str | None = None
         self._cancelled = False
         self._cancel_requested = False
+        self._changed_after_attempt = False                # settings changed since a failed or cancelled forge
+        self._names = (model.family, model.style)          # to tell a name edit from an output-path change
         self._last_primary: tuple[str, bool] | None = None
         self.setObjectName("forgePage")
         self.setStyleSheet(STYLE)
@@ -175,7 +214,7 @@ class ForgePage(QWidget):
         # widgets -> model / actions
         self.family_edit.textChanged.connect(self._on_family_edited)
         self.style_edit.textChanged.connect(self._on_style_edited)
-        self.change_button.clicked.connect(self._choose_output)
+        self.change_button.clicked.connect(self.choose_output)
         self.cancel_button.clicked.connect(self._cancel)
         self.details_button.toggled.connect(self._toggle_details)
         self.install_button.clicked.connect(self._install)
@@ -195,6 +234,9 @@ class ForgePage(QWidget):
         self.model.resultCancelled.connect(self._on_result_cancelled)
         self.model.resultStale.connect(self._on_result_stale)
         self.model.namesChanged.connect(self._on_names_changed)
+        reset_done = getattr(self.model, "resetDone", None)   # newer models announce "Start over"
+        if reset_done is not None:
+            reset_done.connect(self._on_reset_done)
 
         self.preview.set_sample_text(self.model.sample_text)
         self._sync_names()
@@ -388,6 +430,16 @@ class ForgePage(QWidget):
     def warning_labels(self) -> list[QLabel]:
         return [self.warnings_layout.itemAt(i).widget() for i in range(self.warnings_layout.count())]
 
+    def choose_output(self) -> None:
+        """Ask where to save the font (the Change… button; the tray's primary ▾ menu calls it too)."""
+        path, _filter = QFileDialog.getSaveFileName(self, "Save the font as", self.model.output, FONT_FILTER)
+        if path:
+            self.model.set_output(path, by_user=True)
+
+    def saved_for(self) -> tuple[str | None, str] | None:
+        """(result path, output path) of the save of the current result, None when it has not been saved."""
+        return self._saved_for
+
     # ----- primary button contract -----
     def _primary(self) -> tuple[str, str, bool]:
         m = self.model
@@ -462,15 +514,43 @@ class ForgePage(QWidget):
             self._show_plan()
             preview_note = f"The preview could not load the forged font: {e}"
         self._shown_result = m.result_path
-        self.summary_label.setText(summary_sentence(report.materials))
-        self.summary_label.setToolTip(summary_sentence(report.materials, limit=None).replace(" · ", "\n"))
+        tallies = self._result_tallies(report)
+        self.summary_label.setText(summary_sentence(report.materials, tallies))
+        self.summary_label.setToolTip(summary_sentence(report.materials, tallies, limit=None, min_share=0)
+                                      .replace(" · ", "\n"))
         self._set_warnings(list(report.warnings) + ([preview_note] if preview_note else []))
         self.details_text.setPlainText(report.as_text())
         self.details_button.setChecked(False)
         self.install_button.setVisible(install.is_supported())
-        self.open_folder_button.setEnabled(self._saved_for is not None)
+        self._refresh_open_folder()
         self._refresh_missing()
         self._refresh_recap()
+
+    def _result_tallies(self, report) -> list[Tally] | None:
+        """How many characters each material supplied per group, from the plan of the spec that was forged.
+
+        The card is only filled for a fresh result, so the model's spec is the forged one; planning it again
+        here is cheap and does not depend on the debounced plan having caught up.
+        """
+        try:
+            tallies = plan_tallies(plan_spec(self.model.build_spec()))
+        except Exception:  # a face that cannot be planned any more: the report's own order will do
+            return None
+        return tallies if len(tallies) == len(report.materials) else None
+
+    def _refresh_open_folder(self) -> None:
+        """Open folder only leads somewhere when the result on show was saved to the current output path."""
+        m = self.model
+        self.open_folder_button.setEnabled(self._saved_for is not None and self._saved_for == (m.result_path, m.output))
+
+    def _clear_saved_state(self) -> None:
+        """A new result (or a reset): what was saved or installed belonged to the previous one."""
+        self._saved_for = None
+        self._installed_name = None
+        self.saved_label.setText("")
+        self.saved_label.hide()
+        self.remove_button.hide()
+        self._refresh_open_folder()
 
     def _set_warnings(self, warnings: list[str]) -> None:
         for label in self.warning_labels():
@@ -498,7 +578,7 @@ class ForgePage(QWidget):
             tooltip = self._error_detail or ""
         elif self._cancelled:
             text = HINT_CANCELLED
-        elif m.is_stale:
+        elif m.is_stale or self._changed_after_attempt:
             text = HINT_STALE
         else:
             text = HINT_ARRIVE
@@ -551,7 +631,17 @@ class ForgePage(QWidget):
         self.path_label.setToolTip(m.output)
 
     # ----- model -> page -----
+    def _forget_attempt(self) -> None:
+        """Settings changed after a failed or cancelled forge: the hint returns to 'Settings changed'."""
+        if self._last_error is not None or self._cancelled:
+            self._last_error = self._error_detail = None
+            self._cancelled = False
+            self._changed_after_attempt = True
+            if self.state() == STATE_READY:
+                self._refresh_hint()
+
     def _on_materials_changed(self) -> None:
+        self._forget_attempt()
         self._sync_state()
         if self.state() != STATE_RESULT:
             self._show_plan()
@@ -575,6 +665,7 @@ class ForgePage(QWidget):
         if busy:
             self._last_error = self._error_detail = None
             self._cancelled = self._cancel_requested = False
+            self._changed_after_attempt = False
             self.progress_bar.setValue(0)
             self.stage_label.setText(STAGE_STARTING)
             self.cancel_button.setEnabled(True)
@@ -588,6 +679,15 @@ class ForgePage(QWidget):
         self.progress_bar.setValue(int(round(fraction * 100)))
 
     def _on_result_ready(self, _report) -> None:
+        self._clear_saved_state()   # the previous result's save or install says nothing about this one
+        self._sync_state()
+        self._announce_primary()
+
+    def _on_reset_done(self) -> None:
+        """The model was reset ("Start over"): nothing is saved, installed, failed or cancelled any more."""
+        self._clear_saved_state()
+        self._last_error = self._error_detail = None
+        self._cancelled = self._changed_after_attempt = False
         self._sync_state()
         self._announce_primary()
 
@@ -608,7 +708,12 @@ class ForgePage(QWidget):
         self._announce_primary()
 
     def _on_names_changed(self) -> None:
+        names = (self.model.family, self.model.style)
+        if names != self._names:       # the family or style changed (an output path does not change the forge)
+            self._names = names
+            self._forget_attempt()
         self._sync_names()
+        self._refresh_open_folder()
         self._announce_primary()
 
     # ----- widgets -> model / actions -----
@@ -624,11 +729,6 @@ class ForgePage(QWidget):
         self.model.set_sample_text(text)
         self._refresh_recap()
         self._refresh_missing()
-
-    def _choose_output(self) -> None:
-        path, _filter = QFileDialog.getSaveFileName(self, "Save the font as", self.model.output, FONT_FILTER)
-        if path:
-            self.model.set_output(path, by_user=True)
 
     def _cancel(self) -> None:
         if self.model.cancel():
@@ -649,7 +749,7 @@ class ForgePage(QWidget):
         """Copy the result to the output path (asking before replacing a file this page did not write itself)."""
         m = self.model
         out = Path(m.output)
-        if out.exists() and self._saved_for != (m.result_path, m.output) and not self._confirm_overwrite(out):
+        if out.exists() and str(out) not in self._written and not self._confirm_overwrite(out):
             return None
         try:
             saved = m.save_to(out)
@@ -657,7 +757,8 @@ class ForgePage(QWidget):
             QMessageBox.critical(self, "Could not save the font", str(e))
             return None
         self._saved_for = (m.result_path, m.output)
-        self.open_folder_button.setEnabled(True)
+        self._written.add(str(out))
+        self._refresh_open_folder()
         self._announce_primary()
         return saved
 

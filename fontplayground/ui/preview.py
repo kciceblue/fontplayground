@@ -3,18 +3,23 @@
 Two modes:
 - single-font mode (set_face / set_font_file): the whole sample in one font, red where the font has no glyph;
 - plan mode (set_plan): each character in the font that will supply it, red where no font does.
+
+Rendering is lazy: a hidden widget does not render until it is shown, and bursts of requests (a keystroke,
+a resize, a size change) collapse into one render on the next event-loop pass (request_render).
+Setting a font, a plan or the sample text renders at once when the widget is visible.
 """
 from __future__ import annotations
 
 import html
 from typing import Callable
 
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QFont, QFontDatabase, QTextBlockFormat, QTextCharFormat, QTextCursor, QTextOption
 from PySide6.QtWidgets import (QHBoxLayout, QLabel, QPlainTextEdit, QScrollArea, QSlider, QSpinBox, QTextBrowser,
-                               QVBoxLayout, QWidget)
+                               QToolButton, QVBoxLayout, QWidget)
 
 from fontplayground.catalog.face import FontFace
+from fontplayground.ui.textutil import is_ignorable, visible_chars
 
 DEFAULT_SAMPLE = (
     "The quick brown fox jumps over the lazy dog 0123456789\n"
@@ -26,6 +31,7 @@ DEFAULT_SAMPLE = (
 MISSING_COLOR = "#ffb3b3"
 MISSING_STYLE = f"background-color:{MISSING_COLOR};"
 PLACEHOLDER_HTML = '<span style="color:gray">Select a font to preview</span>'
+EDITOR_TOGGLE_TEXT = "Edit sample text"
 
 FaceKey = tuple[str, int]
 # (path, style or None, preferred family or None, axes as (tag, min, default, max) tuples)
@@ -101,12 +107,35 @@ class PreviewWidget(QWidget):
         self._plan: dict[FaceKey, PlanFont] = {}
         self._source_of: SourceOf | None = None
         self._plan_family: str | None = None
+        # rendering: one timer coalesces requests; a render skipped while hidden is owed to the next show
+        self._render_timer = QTimer(self)
+        self._render_timer.setSingleShot(True)
+        self._render_timer.setInterval(0)
+        self._render_timer.timeout.connect(self._render)
+        self._render_owed = False
 
         layout = QVBoxLayout(self)
+
+        # The disclosure row sits above the size rows; the editor unfolds under it.
+        toggle_row = QHBoxLayout()
+        self.editor_toggle = QToolButton()
+        self.editor_toggle.setText(EDITOR_TOGGLE_TEXT)
+        self.editor_toggle.setCheckable(True)
+        self.editor_toggle.setAutoRaise(True)
+        self.editor_toggle.setArrowType(Qt.ArrowType.RightArrow)
+        self.editor_toggle.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
+        self.editor_toggle.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.editor_toggle.setToolTip("Type your own text to see how it will look")
+        self.editor_toggle.toggled.connect(self.set_editor_visible)
+        toggle_row.addWidget(self.editor_toggle)
+        toggle_row.addStretch(1)
+        layout.addLayout(toggle_row)
+
         self.editor = QPlainTextEdit(DEFAULT_SAMPLE)
         self.editor.setMaximumHeight(110)
         self.editor.textChanged.connect(lambda: self.sampleChanged.emit(self.sample_text()))
-        self.editor.textChanged.connect(self._render)
+        self.editor.textChanged.connect(self.request_render)
+        self.editor.hide()
         layout.addWidget(self.editor)
 
         slider_row = QHBoxLayout()
@@ -138,12 +167,13 @@ class PreviewWidget(QWidget):
             spin.setRange(6, 200)
             spin.setValue(size)
             spin.setSuffix(" pt")
-            spin.valueChanged.connect(self._render)
+            spin.valueChanged.connect(self.request_render)
             browser = QTextBrowser()
             browser.setOpenLinks(False)
             browser.setFrameShape(QTextBrowser.Shape.NoFrame)
             browser.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
             browser.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+            browser.document().setUndoRedoEnabled(False)   # read-only: an undo history would only cost time
             row.addWidget(spin, 0, Qt.AlignmentFlag.AlignTop)
             row.addWidget(browser, 1)
             rows_layout.addLayout(row)
@@ -216,14 +246,32 @@ class PreviewWidget(QWidget):
             self.editor.blockSignals(False)
             self._render()
 
+    def set_editor_visible(self, visible: bool) -> None:
+        """Unfold (or fold) the sample-text editor under its 'Edit sample text' toggle."""
+        visible = bool(visible)
+        self.editor.setVisible(visible)
+        self.editor_toggle.setArrowType(Qt.ArrowType.DownArrow if visible else Qt.ArrowType.RightArrow)
+        if self.editor_toggle.isChecked() != visible:
+            self.editor_toggle.blockSignals(True)
+            self.editor_toggle.setChecked(visible)
+            self.editor_toggle.blockSignals(False)
+
+    def is_editor_visible(self) -> bool:
+        return not self.editor.isHidden()
+
+    def request_render(self) -> None:
+        """Render on the next event-loop pass; any number of requests before then make one render."""
+        if not self._render_timer.isActive():
+            self._render_timer.start()
+
     def missing_characters(self) -> list[str]:
-        """Sample characters (sorted, unique, no spaces) that the shown font(s) cannot draw."""
+        """Sample characters (sorted, unique, no spaces or invisible characters) the shown font(s) cannot draw."""
         if not self._has_content():
             return []
-        chars = {c for c in self.sample_text() if not c.isspace()}
+        chars = visible_chars(self.sample_text())
         if self._plan_mode:
-            return sorted(c for c in chars if self._source_of(ord(c)) is None)
-        return sorted(c for c in chars if ord(c) not in self._codepoints)
+            return [c for c in chars if self._source_of(ord(c)) is None]
+        return [c for c in chars if ord(c) not in self._codepoints]
 
     # ----- internals -----
     def _leave_plan_mode(self) -> None:
@@ -241,7 +289,7 @@ class PreviewWidget(QWidget):
 
     def _on_weight(self, value: int) -> None:
         self.weight_value.setText(str(value))
-        self._render()
+        self.request_render()
 
     def _make_font(self, size: int) -> QFont:
         wght = float(self.weight_slider.value()) if self._has_wght else None
@@ -253,7 +301,7 @@ class PreviewWidget(QWidget):
             parts = []
             for ch in line:
                 esc = html.escape(ch)
-                if not ch.isspace() and ord(ch) not in self._codepoints:
+                if not is_ignorable(ch) and ord(ch) not in self._codepoints:
                     esc = f'<span style="{MISSING_STYLE}">{esc}</span>'
                 parts.append(esc)
             lines.append("".join(parts).replace("  ", "&nbsp; "))
@@ -262,12 +310,13 @@ class PreviewWidget(QWidget):
     def _runs(self, line: str) -> list[tuple[FaceKey | None, bool, str]]:
         """Split one line into (key, missing, text) runs of consecutive characters drawn by the same material.
 
-        Spaces are never "missing": they join the run before them (or the material of the next character).
+        Spaces and invisible characters (joiners, variation selectors…) are never "missing": they join the run
+        before them (or the material of the next character).
         """
         runs: list[list] = []
         for ch in line:
             key = self._source_of(ord(ch))
-            if ch.isspace():
+            if is_ignorable(ch):
                 missing = False
                 if key is None:
                     key = runs[-1][0] if runs else None
@@ -290,18 +339,28 @@ class PreviewWidget(QWidget):
         missing_brush = QColor(MISSING_COLOR)
         block_format = QTextBlockFormat()
         block_format.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignAbsolute)  # RTL lines stay on the left too
-        for line_no, line in enumerate(self.sample_text().split("\n")):
-            if line_no:
-                cursor.insertBlock()
-            cursor.setBlockFormat(block_format)
-            for key, missing, text in self._runs(line):
-                fmt = QTextCharFormat()
-                fmt.setFont(fonts.get(key, fallback))
-                if missing:
-                    fmt.setBackground(missing_brush)
-                cursor.insertText(text, fmt)
+        cursor.beginEditBlock()   # one document change for the whole sample, not one per run
+        try:
+            for line_no, line in enumerate(self.sample_text().split("\n")):
+                if line_no:
+                    cursor.insertBlock()
+                cursor.setBlockFormat(block_format)
+                for key, missing, text in self._runs(line):
+                    fmt = QTextCharFormat()
+                    fmt.setFont(fonts.get(key, fallback))
+                    if missing:
+                        fmt.setBackground(missing_brush)
+                    cursor.insertText(text, fmt)
+        finally:
+            cursor.endEditBlock()
 
     def _render(self) -> None:
+        """Draw the sample in every size row now — unless the widget is hidden, in which case the next show does."""
+        self._render_timer.stop()   # a render now satisfies any pending request
+        if not self.isVisible():
+            self._render_owed = True
+            return
+        self._render_owed = False
         for spin, browser in zip(self.size_spins, self.browsers):
             if not self._has_content():
                 browser.setHtml(PLACEHOLDER_HTML)
@@ -317,6 +376,11 @@ class PreviewWidget(QWidget):
             doc.setTextWidth(max(browser.viewport().width(), 200))
             browser.setFixedHeight(int(doc.size().height()) + 12)
 
+    def showEvent(self, event) -> None:  # noqa: N802
+        super().showEvent(event)
+        if self._render_owed:
+            self._render()
+
     def resizeEvent(self, event) -> None:  # noqa: N802
         super().resizeEvent(event)
-        self._render()
+        self.request_render()

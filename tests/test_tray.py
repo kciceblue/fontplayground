@@ -1,10 +1,16 @@
 import pytest
 from PySide6.QtCore import QModelIndex, Qt
 from PySide6.QtTest import QTest
+from PySide6.QtWidgets import QMenu, QSizePolicy, QToolButton
 
 from fontplayground.catalog.face import read_faces
 from fontplayground.ui.model import ForgeModel
-from fontplayground.ui.tray import MAX_HEIGHT, MIN_HEIGHT, Chip, MaterialsTray, chip_label
+from fontplayground.ui.tray import (MAX_HEIGHT, MAX_PRIMARY_CHARS, MIN_HEIGHT, PRIMARY_MIN_WIDTH, SUGGESTION_MIN_WIDTHS, Chip,
+                                    MaterialsTray, chip_label, elide_middle)
+from tests.fixtures import cps, fake_face
+
+WIDE = 1600   # room for every label at the offscreen platform's (wide) font metrics
+LONG_PRIMARY = "Save to C:\\Users\\somebody\\Documents\\fonts\\Forged Family SemiBold.ttf ▾"   # 70 characters
 
 
 @pytest.fixture
@@ -24,8 +30,24 @@ def model(qapp):
 def tray(qtbot, model):
     t = MaterialsTray(model)
     qtbot.addWidget(t)
+    t.resize(WIDE, 72)
     t.show()
     return t
+
+
+def _visible(buttons):
+    return [not b.isHidden() for b in buttons]
+
+
+def _crowded(model, missing_count=20, family="Some Very Long Suggested Family Name {i}"):
+    """One material, a sample missing `missing_count` characters, and three suggestions (named `family`) in the catalog."""
+    missing = "".join(chr(0x3041 + i) for i in range(missing_count))
+    a = fake_face(cps("abc"), path="a.ttf", family="Fixture A")
+    suggested = [fake_face(cps(missing[i::3]), path=f"s{i}.ttf", family=family.format(i=i)) for i in range(3)]
+    model.set_catalog({f.key: f for f in [a] + suggested})
+    model.add(a)
+    model.set_sample_text("abc " + missing)
+    return missing
 
 
 def test_chips_follow_the_model(tray, model, faces):
@@ -106,6 +128,7 @@ def test_hint_shows_missing_chars_with_suggestion_buttons(qtbot, tray, model, fa
     model.set_sample_text("ab →")
     model.add(a)
     assert tray.hint_label.text() == "Your sample still needs: →"
+    assert tray.hint_label.toolTip() == ""            # nothing hidden: no tooltip
     assert "#b91c1c" in tray.hint_label.styleSheet()
     buttons = tray.suggestion_buttons()
     assert [x.text() for x in buttons] == ["Add Fixture C"]
@@ -114,6 +137,7 @@ def test_hint_shows_missing_chars_with_suggestion_buttons(qtbot, tray, model, fa
     assert model.keys() == [a.key, c.key]
     assert tray.hint_label.text() == "Your sample is fully covered."
     assert "#15803d" in tray.hint_label.styleSheet() and tray.suggestion_buttons() == []
+    assert tray.suggestions_box.isHidden()
 
     model.set_sample_text("ab →漢")  # the sample changed: the hint follows without a materials change
     assert tray.hint_label.text() == "Your sample still needs: 漢"
@@ -130,7 +154,9 @@ def test_hint_caps_the_characters_it_lists(tray, model, faces):
     text = tray.hint_label.text()
     assert text.startswith("Your sample still needs: ぁ") and text.endswith(" …")
     assert len(text.split(": ")[1].split()) == 21
-    assert len(tray.hint_label.toolTip().split()) == 25
+    tooltip = tray.hint_label.toolTip()                 # the tooltip tells the whole story
+    assert tooltip.startswith("Your sample still needs: ぁ") and len(tooltip.split(": ")[1].split()) == 25
+    assert tray.hint_label.full_text() == tooltip
 
 
 def test_recap_counts_fonts_and_planned_characters(qtbot, tray, model, faces):
@@ -170,3 +196,149 @@ def test_tray_height_stays_compact(tray, model, faces):
         model.add(f)
     assert (tray.minimumHeight(), tray.maximumHeight()) == (MIN_HEIGHT, MAX_HEIGHT) == (64, 84)
     assert MIN_HEIGHT <= tray.height() <= MAX_HEIGHT
+
+
+# ----- S1: the tray never dictates the window width -----
+def test_elide_middle_keeps_head_and_tail():
+    assert elide_middle("short") == "short"
+    assert elide_middle("x" * MAX_PRIMARY_CHARS) == "x" * MAX_PRIMARY_CHARS
+    assert len(LONG_PRIMARY) == 70
+    shown = elide_middle(LONG_PRIMARY)
+    assert len(shown) == MAX_PRIMARY_CHARS and "…" in shown
+    assert shown.startswith("Save to C:\\Users\\") and shown.endswith("SemiBold.ttf ▾")
+    assert elide_middle("abcdefgh", 5) == "ab…gh"
+
+
+def test_tray_minimum_width_is_bounded_whatever_the_texts(qtbot, tray, model):
+    missing = _crowded(model, missing_count=20)
+    assert len(model.missing_sample_chars()) == 20
+    buttons = tray.suggestion_buttons()
+    assert len(buttons) == 3 and all(b.text().startswith("Add Some Very Long") for b in buttons)
+    tray.set_back_visible(True)
+    tray.set_primary(LONG_PRIMARY, True)
+    assert tray.minimumSizeHint().width() <= 900
+    # the mechanisms behind the number
+    for label in (tray.hint_label, tray.recap_label):
+        assert label.sizePolicy().horizontalPolicy() == QSizePolicy.Policy.Ignored
+        assert label.sizePolicy().verticalPolicy() == QSizePolicy.Policy.Preferred
+    assert tray.suggestions_box.minimumWidth() == 0
+    assert len(tray.primary_button.text()) == MAX_PRIMARY_CHARS
+    assert tray.hint_label.full_text() == "Your sample still needs: " + " ".join(missing)
+    # even squeezed to the bone nothing overflows: every part fits inside the tray
+    tray.resize(tray.minimumSizeHint().width(), 72)
+    qtbot.waitUntil(lambda: tray.width() == tray.minimumSizeHint().width(), timeout=2000)
+    assert tray.width() <= 900
+    for widget in (tray.list, tray.add_button, tray.recap_label, tray.hint_label, tray.suggestions_box,
+                   tray.back_button, tray.primary_button):
+        assert widget.geometry().right() <= tray.width()
+    primary = tray.primary_button
+    assert primary.width() >= primary.minimumSizeHint().width() == min(primary.sizeHint().width(), PRIMARY_MIN_WIDTH)
+
+
+def test_primary_label_is_capped_with_the_full_text_in_the_tooltip(tray):
+    long = "Save to " + "C:\\a very deep folder\\" * 3 + "Family.ttf ▾"
+    assert len(long) > MAX_PRIMARY_CHARS
+    tray.set_primary(long, True)
+    shown = tray.primary_button.text()
+    assert len(shown) == MAX_PRIMARY_CHARS and shown == elide_middle(long)
+    assert shown.startswith("Save to C:\\") and shown.endswith("Family.ttf ▾")
+    assert tray.primary_button.toolTip() == long
+    tray.set_primary(long, False, "Pick a folder first")           # both the full text and the explanation
+    assert tray.primary_button.toolTip() == long + "\nPick a folder first"
+    tray.set_primary("Next: Check ›", True)                          # short: as given, no tooltip
+    assert tray.primary_button.text() == "Next: Check ›" and tray.primary_button.toolTip() == ""
+
+
+def test_hint_elides_to_the_room_it_gets(qtbot, tray, model, faces):
+    a, b, c = faces
+    model.add(a)
+    model.set_sample_text("".join(chr(0x3041 + i) for i in range(20)))   # no catalog: a long hint, no buttons
+    tray.set_primary("Next ›", True)
+    hint = tray.hint_label
+    full = hint.full_text()
+    assert hint.text() == full and hint.elided_text() == full and hint.toolTip() == ""
+    natural = hint.sizeHint().width()
+    assert hint.width() == natural == hint.maximumWidth()                   # its natural width, no more
+    # narrow the tray, half a hint at a time, until the hint no longer gets all it needs (never to zero)
+    width = tray.width()
+    while hint.width() >= natural and width > tray.minimumSizeHint().width():
+        width = max(width - natural // 2, tray.minimumSizeHint().width())
+        tray.resize(width, 72)
+        qtbot.waitUntil(lambda: tray.width() == width, timeout=2000)
+    assert 0 < hint.width() < natural
+    assert hint.text() == full                                              # the logical text never changes…
+    painted = hint.elided_text()
+    assert painted != full and painted.endswith("…") and full.startswith(painted[:-1])   # …the painted one does
+    assert hint.toolTip() == full
+    tray.resize(WIDE, 72)
+    qtbot.waitUntil(lambda: hint.elided_text() == full, timeout=2000)
+    assert hint.toolTip() == ""
+    # a label with a shortened text tells the whole story in its tooltip even when nothing is elided
+    model.set_sample_text("".join(chr(0x3041 + i) for i in range(25)))
+    assert hint.elided_text() == hint.text() != hint.full_text() and hint.toolTip() == hint.full_text()
+
+
+def test_suggestions_hide_as_the_tray_narrows(qtbot, tray, model):
+    _crowded(model, missing_count=20)
+    tray.set_primary("Next ›", True)
+    buttons = tray.suggestion_buttons()
+    assert len(buttons) == 3 and SUGGESTION_MIN_WIDTHS == (0, 860, 1000)
+    assert _visible(buttons) == [True, True, True]
+    tray.resize(1000, 72)
+    qtbot.waitUntil(lambda: tray.width() == 1000, timeout=2000)
+    assert _visible(buttons) == [True, True, True]
+    tray.resize(950, 72)
+    qtbot.waitUntil(lambda: tray.width() == 950, timeout=2000)
+    assert _visible(buttons) == [True, True, False]          # the third goes first…
+    tray.resize(800, 72)
+    qtbot.waitUntil(lambda: tray.width() == 800, timeout=2000)
+    assert _visible(buttons) == [True, False, False]         # …then the second; the first always stays
+    assert not tray.suggestions_box.isHidden()
+    tray.resize(WIDE, 72)
+    qtbot.waitUntil(lambda: tray.width() == WIDE, timeout=2000)
+    assert _visible(buttons) == [True, True, True]
+    model.set_sample_text("abc")                              # nothing missing: the box itself goes
+    assert tray.suggestion_buttons() == [] and tray.suggestions_box.isHidden()
+
+
+def test_visible_suggestion_buttons_are_never_clipped(qtbot, tray, model):
+    """A button the tray decides to show is shown whole: the box is served first, the labels elide around it."""
+    _crowded(model, missing_count=20, family="Fam {i}")       # short names: three buttons fit at every width below
+    tray.set_primary("Next ›", True)
+    buttons = tray.suggestion_buttons()
+    hint, recap = tray.hint_label, tray.recap_label
+    assert tray.suggestions_box.minimumSizeHint().width() == 0   # …yet the box never asks the window for room
+    for width, expected in ((1100, [True, True, True]), (950, [True, True, False]), (800, [True, False, False])):
+        tray.resize(width, 72)
+        qtbot.waitUntil(lambda: tray.width() == width, timeout=2000)
+        assert _visible(buttons) == expected
+        shown = [b for b in buttons if not b.isHidden()]
+        assert [b.width() for b in shown] == [b.sizeHint().width() for b in shown], f"clipped at {width}"
+        natural = sum(b.sizeHint().width() for b in shown) + tray.suggestions_layout.spacing() * (len(shown) - 1)
+        assert tray.suggestions_box.width() == natural
+        # the labels take what is left (all they need, or less: with the offscreen platform's wide default
+        # font they elide here; once earlier tests registered the tiny fixture fonts everything fits)
+        assert 0 < recap.width() <= recap.sizeHint().width() and 0 < hint.width() <= hint.sizeHint().width()
+        assert hint.toolTip() == ("" if hint.elided_text() == hint.full_text() else hint.full_text())
+
+
+# ----- S2: the primary button's menu -----
+def test_primary_menu_button_appears_with_a_menu(qtbot, tray):
+    button = tray.primary_menu_button
+    assert isinstance(button, QToolButton) and button.objectName() == "primaryMenu"
+    assert button.isHidden() and button.menu() is None
+    assert tray.primary_button.property("attached") in (None, False)
+    menu = QMenu(tray)
+    action = menu.addAction("Choose location…")
+    tray.set_primary_menu(menu)
+    assert not button.isHidden() and button.menu() is menu and button.text() == "▾"
+    assert button.popupMode() == QToolButton.ToolButtonPopupMode.InstantPopup
+    assert button.focusPolicy() == Qt.FocusPolicy.NoFocus
+    assert tray.primary_button.property("attached") is True
+    assert menu.actions() == [action]
+    # glued: same row, directly to the right of the primary button, same height
+    assert button.geometry().left() == tray.primary_button.geometry().right() + 1
+    assert button.height() == tray.primary_button.height()
+    tray.set_primary_menu(None)
+    assert button.isHidden() and button.menu() is None
+    assert tray.primary_button.property("attached") is False

@@ -195,3 +195,68 @@ def test_close_during_forge_asks_and_cancels(qtbot, font_dir, tmp_path, monkeypa
     with qtbot.waitSignal(w.model.resultCancelled, timeout=15000):
         assert w.close() is True
     assert not w.model.is_busy()
+
+
+def test_status_bar_pluralises_unreadable_files(qtbot, font_dir, tmp_path):
+    shutil.copytree(font_dir, tmp_path / "f")
+    (tmp_path / "f" / "broken.ttf").write_bytes(b"not a font")
+    w = _open(qtbot, tmp_path / "f", tmp_path / "cfg")
+    assert w.statusBar().currentMessage() == "7 font faces found, 1 unreadable file skipped"
+
+
+def test_search_box_has_focus_on_pick(qtbot, font_dir, tmp_path):
+    w = _open(qtbot, font_dir, tmp_path / "cfg")
+    w.show()
+    w.go(PICK)
+    assert w.pick_page.search.hasFocus() or w.focusWidget() is w.pick_page.search
+
+
+def test_forge_locks_navigation_and_editing(qtbot, font_dir, tmp_path, forge_waits_for_cancel):
+    w = _open(qtbot, font_dir, tmp_path / "cfg")
+    (a,) = read_faces(font_dir / "A.ttf")
+    _add(w, a)
+    w.go(FORGE)
+    assert w.model.is_busy()
+    assert not w.rail.buttons[PICK].isEnabled() and not w.rail.buttons[CHECK].isEnabled()
+    assert not w.tray.back_button.isEnabled() and not w.pick_page.add_button.isEnabled()
+    with qtbot.waitSignal(w.model.resultCancelled, timeout=15000):
+        w.model.cancel()
+    assert w.rail.buttons[PICK].isEnabled() and w.tray.back_button.isEnabled() and w.pick_page.add_button.isEnabled()
+
+
+def test_start_over_forgets_names_and_edits(qtbot, font_dir, tmp_path):
+    w = _open(qtbot, font_dir, tmp_path / "cfg")
+    (a,) = read_faces(font_dir / "A.ttf")
+    _add(w, a)
+    w.model.set_family("Typed Name", by_user=True)
+    w.rail.start_over_action.trigger()
+    assert w.model.rows == [] and w.model.family == "Forged" and not w.model.names_edited["family"]
+    _add(w, a)
+    assert w.model.family == "Fixture A Forged"
+
+
+def test_malformed_settings_do_not_break_startup(qtbot, font_dir, tmp_path):
+    cfg = tmp_path / "cfg"
+    cfg.mkdir()
+    (cfg / "forge_last.json").write_text('{"materials": "nonsense", "pins": {"latin": "x"}, "base_index": "zero"}',
+                                         encoding="utf-8")
+    w = _open(qtbot, font_dir, cfg)
+    assert w.model.rows == [] and w.step() == PICK
+    (a,) = read_faces(font_dir / "A.ttf")
+    _add(w, a)
+    assert w.rail.is_reachable(CHECK)
+
+
+def test_primary_offers_choose_location_after_a_result(qtbot, font_dir, tmp_path):
+    w = _open(qtbot, font_dir, tmp_path / "cfg")
+    (a,) = read_faces(font_dir / "A.ttf")
+    _add(w, a)
+    w.go(FORGE)
+    with qtbot.waitSignal(w.model.resultReady, timeout=60000):
+        pass
+    try:
+        assert w.tray.primary_button.text().startswith("Save to") or w.tray.primary_button.toolTip().startswith("Save to")
+        assert not w.tray.primary_menu_button.isHidden()
+        assert [a.text() for a in w._primary_menu.actions()] == ["Choose location…"]
+    finally:
+        _cleanup_result(w)

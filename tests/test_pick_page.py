@@ -7,8 +7,9 @@ from PySide6.QtGui import QPalette
 from fontplayground.catalog.face import FontFace, read_faces
 from fontplayground.catalog.scanner import ScanResult
 from fontplayground.ui.model import ForgeModel
-from fontplayground.ui.pick_page import (ADD_TEXT, ADDED_TEXT, COL_FORMAT, COL_NAME, COL_SCRIPTS, PickPage,
-                                         default_face, face_info_text, family_badge, family_format)
+from fontplayground.ui.pick_page import (ADD_TEXT, ADDED_TEXT, ADDS_NOTHING_TEXT, COL_FORMAT, COL_NAME, COL_SCRIPTS,
+                                         LOCKED_TOOLTIP, MIN_COVERED_CHARS, NO_GROUPS_TEXT, PickPage, covered_groups,
+                                         default_face, face_info_text, family_badge, family_format, groups_added)
 from fontplayground.ui.preview import PreviewWidget
 from tests.fixtures import cps, fake_face
 
@@ -165,44 +166,111 @@ def test_family_row_previews_default_face_and_coverage_against_empty_tray(page, 
     assert page.family_label.text() == "Fixture B"
     assert combo_texts(page) == ["Bold"] and page.style_combo.currentText() == "Bold"
     assert page.licence_label.text() == "licence: installable" and page.licence_label.property("restricted") is False
+    # the fixture has four characters: no group reaches MIN_COVERED_CHARS, so none is claimed as covered
     assert page.coverage_label.text() == \
-        "Covers Latin, Han, CJK symbols & fullwidth · Missing from your sample: c → 字"
+        f"Covers {NO_GROUPS_TEXT} · Missing from your sample: c → 字" == \
+        "Covers only a few characters · Missing from your sample: c → 字"
     assert "#b3261e" in page.coverage_label.styleSheet()
     assert page.coverage_label.toolTip() == "Not in this font: c → 字"
     assert page.details_label.isHidden() and page.details_label.text() == face_info_text(b)
     assert page.add_button.isEnabled() and page.add_button.text() == ADD_TEXT
     # the sample drives the line: a sample the face fully covers turns it green
     model.set_sample_text("ab 漢")
-    assert page.coverage_label.text() == "Covers Latin, Han, CJK symbols & fullwidth · Covers your whole sample"
+    assert page.coverage_label.text() == f"Covers {NO_GROUPS_TEXT} · Covers your whole sample"
     assert "#2f8f46" in page.coverage_label.styleSheet()
     # the restricted licence is flagged
     page.tree.setCurrentItem(page.family_item("Fixture C"))
     assert page.licence_label.text() == "licence: restricted" and page.licence_label.property("restricted") is True
 
 
-def test_coverage_says_what_a_face_would_add_once_the_tray_has_fonts(page, faces, model):
+def test_coverage_says_what_a_face_would_add_to_the_sample_once_the_tray_has_fonts(page, faces, model):
     a, b, c = (face_at(faces, n) for n in ("A.ttf", "B.otf", "C.ttf"))
+    model.set_sample_text("abc 漢字 →，")
     model.add(a)
     page.tree.setCurrentItem(page.family_item("Fixture B"))
+    # what the sample still needs (漢 字 → ，) and B can draw (漢 ，): Han and CJK symbols
     assert page.coverage_label.text() == \
-        "Covers Latin, Han, CJK symbols & fullwidth · Would add to your sample: Han, CJK symbols & fullwidth"
+        f"Covers {NO_GROUPS_TEXT} · Would add to your sample: Han, CJK symbols & fullwidth"
     assert "#2f8f46" in page.coverage_label.styleSheet()
-    page.tree.setCurrentItem(page.family_item("Fixture K"))   # Latin only: nothing new
-    assert page.coverage_label.text() == "Covers Latin · Adds nothing your fonts do not already cover"
+    page.tree.setCurrentItem(page.family_item("Fixture K"))   # 'ab' only: the sample needs nothing it has
+    assert page.coverage_label.text() == f"Covers {NO_GROUPS_TEXT} · {ADDS_NOTHING_TEXT}" == \
+        "Covers only a few characters · Adds nothing your sample still needs"
     assert "#777777" in page.coverage_label.styleSheet()
     page.tree.setCurrentItem(page.family_item("Fixture A"))   # the face itself is in the tray
     assert page.current_face() == a
-    assert page.coverage_label.text() == "Covers Latin · In your materials"
-    # the line follows the tray without reselecting
+    assert page.coverage_label.text() == f"Covers {NO_GROUPS_TEXT} · In your materials"
+    # the line follows the tray and the sample without reselecting
     page.tree.setCurrentItem(page.family_item("Fixture B"))
-    model.add(c)
-    assert "Would add to your sample: Han, CJK symbols & fullwidth" in page.coverage_label.text()
+    model.add(c)                                               # C brings → (and Ω): still Han and CJK symbols to add
+    assert page.coverage_label.text().endswith("· Would add to your sample: Han, CJK symbols & fullwidth")
+    model.set_sample_text("abc →，")                            # no Han in the sample any more: only the comma counts
+    assert page.coverage_label.text().endswith("· Would add to your sample: CJK symbols & fullwidth")
+    model.set_sample_text("abc →")                             # the tray covers the whole sample: B adds nothing
+    assert page.coverage_label.text().endswith(f"· {ADDS_NOTHING_TEXT}")
+    model.set_sample_text("abc 漢字 →，")
     model.add(b)
     assert page.coverage_label.text().endswith("· In your materials")
     model.remove(a.key)
     model.remove(c.key)
     model.remove(b.key)
     assert "Missing from your sample" in page.coverage_label.text()
+
+
+def test_covers_lists_only_groups_with_enough_characters(page, faces, model):
+    """A Latin font with a few Greek letters does not 'cover' Greek: 20 code points make a group count."""
+    latin = set(range(ord("a"), ord("a") + 26))                # 26 Latin letters
+    han = set(range(0x4E00, 0x4E00 + MIN_COVERED_CHARS))       # exactly the minimum
+    greek = cps("Ωμπ")                                         # three Greek letters: not enough
+    face = fake_face(latin | han | greek, path="mostly.ttf", family="Fixture M")
+    assert face.scripts == ["latin", "greek", "han"]           # the any-code-point view (badges, Details)
+    assert covered_groups(face) == ["latin", "han"]
+    assert covered_groups(face, minimum=1) == ["latin", "greek", "han"]
+    assert covered_groups(face, minimum=21) == ["latin"]
+    assert groups_added(face, ["Ω", "一", "→", "z"]) == ["latin", "greek", "han"]   # → is not in the face
+    assert groups_added(face, ["漢", "→"]) == []                # 漢 (U+6F22) is outside the face's Han range
+    assert groups_added(face, []) == []
+    page.add_face(face)
+    page.select_face(face.key)
+    assert page.coverage_label.text().startswith("Covers Latin, Han · ")
+    assert page.family_item("Fixture M").text(COL_SCRIPTS) == "Greek · Han · Latin"   # the badge keeps every group
+    # the tray has A (Latin): the sample needs Ω and 一, both of which this face can draw
+    model.set_sample_text("abc Ω 一")
+    model.add(face_at(faces, "A.ttf"))
+    assert page.coverage_label.text() == "Covers Latin, Han · Would add to your sample: Greek, Han"
+
+
+def test_locked_page_only_disables_the_add_button(page, faces, model):
+    a, b = face_at(faces, "A.ttf"), face_at(faces, "B.otf")
+    model.add(a)
+    page.select_face(a.key)
+    assert not page.is_locked() and page.add_button.isEnabled() and page.add_button.isChecked()
+    page.set_locked(True)
+    assert page.is_locked()
+    assert not page.add_button.isEnabled() and page.add_button.toolTip() == LOCKED_TOOLTIP
+    assert page.add_button.text() == ADDED_TEXT and page.add_button.isChecked()   # it still says what it is
+    page.add_button.click()                                    # disabled: nothing changes
+    page.tree.itemActivated.emit(page.item_for(a.key), 0)      # Enter / double-click: nothing changes either
+    assert model.keys() == [a.key]
+    # browsing keeps working: selection, search, quick filters and the preview
+    assert page.select_face(b.key) and page.current_face() == b
+    assert page.preview.current_family() == "Fixture B" and page.family_label.text() == "Fixture B"
+    assert not page.add_button.isEnabled() and page.add_button.text() == ADD_TEXT
+    assert page.add_button.toolTip() == LOCKED_TOOLTIP
+    page.search.setText("fixture c")
+    assert page.visible_families() == ["Fixture C"]
+    page.search.setText("")
+    page.filter_buttons["Chinese"].click()
+    assert page.visible_families() == ["Fixture B"]
+    page.filter_buttons["Any script"].click()
+    page.tree.itemActivated.emit(page.item_for(b.key), 0)
+    assert model.keys() == [a.key]
+    page.set_locked(False)
+    assert not page.is_locked() and page.add_button.isEnabled()
+    assert page.add_button.toolTip() == "Add Fixture B Bold to your materials"
+    page.add_button.click()
+    assert model.keys() == [a.key, b.key]
+    page.set_locked(False)                                     # already unlocked: harmless
+    assert page.add_button.isEnabled()
 
 
 def test_face_row_previews_that_face_and_syncs_the_combo(page, faces, model):

@@ -1,9 +1,11 @@
 """Step 2, Check: what each font supplies, how the mix will look, and who supplies what.
 
 Left: one card per material in priority order (rank badge, name, a one-line sample drawn in that very font,
-its share of the plan, ▲▼, a collapsed Adjust area) and a collapsed Advanced area. Right: the composite
-preview, the characters no font covers, and the "Who supplies what" table. Everything shown comes from the
-ForgeModel; every action goes back through it. The page never owns the primary button (the tray does).
+its share of the plan, ▲▼, a collapsed Adjust area whose title names any boldness or size set) and a collapsed
+Advanced area. Right: the composite preview, the characters no font covers, the model's glyph-budget warning
+(an amber callout) and the "Who supplies what" table. Everything shown comes from the ForgeModel; every action
+goes back through it. The page never owns the primary button (the tray does). While a forge runs the app locks
+the page (set_locked): every control that could change the spec is disabled, the previews stay live.
 """
 from __future__ import annotations
 
@@ -30,11 +32,13 @@ AS_IS = "As is"
 WEIGHT_CHOICES = [AS_IS] + [str(w) for w in range(100, 950, 50)]
 SCALE_RANGE = (10, 1000)              # percent
 MAX_PLAN_GROUPS = 3                   # groups named on a card's plan line before "…"
+MAX_MISSING_CHARS = 20                # uncovered sample characters listed before "…" (the tooltip has them all)
 MAIN_CHOICE = "Main"                  # first entry of the "Line spacing from" combo
 PLACEHOLDER_TEXT = "No fonts yet — go back to Pick fonts."
 PENDING_TEXT = "Working out what it supplies…"
 ADDS_NOTHING_TEXT = "adds nothing — everything it has is already covered above"
 LINE_SPACING_BADGE = "line spacing"
+ADJUST_TEXT = "Adjust"
 MISSING_PREFIX = "Not covered by any font: "
 NOBODY, NO_COUNT = "nobody", "—"
 TABLE_COLUMNS = ["Script", "Supplied by", "Characters"]
@@ -56,6 +60,8 @@ QLabel#nothingBadge { background: #fff5f5; color: #b3261e; border: 1px solid #f0
 QLabel#plan { color: #777777; }
 QLabel#sectionTitle { font-weight: 600; font-size: 14px; color: #1f2933; }
 QLabel#missing { color: #b3261e; }
+QLabel#glyphWarning { background: #fff6e0; border: 1px solid #f2c94c; border-radius: 6px; padding: 6px 10px;
+                      color: #7a4b00; }
 QLabel#fieldLabel { color: #4b5563; }
 QTextEdit#sample { background: transparent; border: none; }
 QToolButton#move { border: 1px solid #d3dae6; border-radius: 6px; background: #ffffff; padding: 0 5px; color: #4b5563; }
@@ -121,9 +127,35 @@ def short_names(faces: Iterable[FontFace]) -> dict[FaceKey, str]:
     return {f.key: (f.family if families.count(f.family) == 1 else f.display_name) for f in faces}
 
 
-def render_sample(edit: QTextEdit, face: FontFace, text: str = SAMPLE_LINE, size: int = SAMPLE_PT) -> None:
-    """Fill `edit` with `text` in the face's own font; characters the face lacks get the missing background."""
-    font = make_font(face.path, face.style, face.family, size, default_wght(face.axes))
+def adjust_title(weight: int | None, scale: float | None) -> str:
+    """'Adjust', 'Adjust · boldness 700', 'Adjust · size 110 %' or 'Adjust · boldness 700 · size 110 %'."""
+    parts = [ADJUST_TEXT]
+    if weight is not None:
+        parts.append(f"boldness {weight}")
+    if scale is not None and scale_percent(scale) != 100:
+        parts.append(f"size {scale_percent(scale)} %")
+    return " · ".join(parts)
+
+
+def sample_wght(face: FontFace, weight: int | None) -> float | None:
+    """The 'wght' axis value to draw a card's sample line at: the boldness chosen for the material, kept within
+    the axis range, else the axis default; None for a font without a weight axis (synthetic bold is not shown)."""
+    axis = next((a for a in face.axes if a[0] == "wght"), None)
+    if axis is None:
+        return None
+    if weight is None:
+        return default_wght(face.axes)
+    _tag, lo, _default, hi = axis
+    return float(min(max(weight, lo), hi))
+
+
+def render_sample(edit: QTextEdit, face: FontFace, text: str = SAMPLE_LINE, size: int = SAMPLE_PT,
+                  wght: float | None = None) -> None:
+    """Fill `edit` with `text` in the face's own font; characters the face lacks get the missing background.
+
+    `wght` (variable fonts): the weight-axis value to draw at, the axis default when None.
+    """
+    font = make_font(face.path, face.style, face.family, size, default_wght(face.axes) if wght is None else wght)
     edit.clear()
     doc = edit.document()
     doc.setDocumentMargin(2)
@@ -187,10 +219,14 @@ class MaterialCard(QFrame):
     adjustChanged = Signal(object, object, object)  # key, weight | None, scale | None
 
     def __init__(self, row: MaterialRow, rank: int, count: int, is_base: bool,
-                 parent: QWidget | None = None) -> None:
+                 parent: QWidget | None = None, default_weight: int | None = None) -> None:
         super().__init__(parent)
         self.key: FaceKey = row.face.key
         self.face: FontFace = row.face
+        self._locked = False
+        self._can_move = (False, False)                  # (up, down) by rank; the lock overrides both
+        effective = row.weight if row.weight is not None else default_weight
+        self._shown_wght: float | None = sample_wght(row.face, effective)   # what the sample line is drawn at
         self.setObjectName("card")
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         layout = QVBoxLayout(self)
@@ -240,7 +276,7 @@ class MaterialCard(QFrame):
         self.sample.setTextInteractionFlags(Qt.TextInteractionFlag.NoTextInteraction)
         self.sample.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         self.sample.setToolTip("Drawn in this font. Red: a character this font cannot draw.")
-        render_sample(self.sample, row.face)
+        render_sample(self.sample, row.face, wght=self._shown_wght)
         layout.addWidget(self.sample)
 
         self.plan_label = QLabel(PENDING_TEXT)
@@ -276,23 +312,31 @@ class MaterialCard(QFrame):
         adjust.addWidget(scale_label)
         adjust.addWidget(self.scale_spin)
         adjust.addStretch(1)
-        self.adjust_button = Disclosure("Adjust", self.adjust_area)
+        self.adjust_button = Disclosure(ADJUST_TEXT, self.adjust_area)
         self.adjust_button.setToolTip("Boldness and size of this font in the result")
         layout.addWidget(self.adjust_button, 0, Qt.AlignmentFlag.AlignLeft)
         layout.addWidget(self.adjust_area)
 
-        self.update_from(row, rank, count, is_base)
+        self.update_from(row, rank, count, is_base, default_weight)
         self.up_button.clicked.connect(lambda: self.moveRequested.emit(self.key, -1))
         self.down_button.clicked.connect(lambda: self.moveRequested.emit(self.key, 1))
         self.weight_combo.currentIndexChanged.connect(self._emit_adjust)
         self.scale_spin.valueChanged.connect(self._emit_adjust)
 
     # ----- model -> card -----
-    def update_from(self, row: MaterialRow, rank: int, count: int, is_base: bool) -> None:
-        """Refresh rank, name, base badge, ▲▼ and the Adjust controls in place (signals stay quiet)."""
-        if row.face is not self.face:
+    def update_from(self, row: MaterialRow, rank: int, count: int, is_base: bool,
+                    default_weight: int | None = None) -> None:
+        """Refresh rank, name, base badge, ▲▼, the Adjust controls and title in place (signals stay quiet).
+
+        `default_weight` is the model's default boldness: a variable font's sample line is drawn at the
+        boldness that will apply to it (its own, else the default), so the line follows the Adjust combo.
+        """
+        effective = row.weight if row.weight is not None else default_weight
+        wght = sample_wght(row.face, effective)
+        if row.face is not self.face or wght != self._shown_wght:
             self.face = row.face
-            render_sample(self.sample, row.face)
+            self._shown_wght = wght
+            render_sample(self.sample, row.face, wght=wght)
         self.name_label.setText(row.face.display_name)
         self.name_label.setToolTip(f"{row.face.display_name}\n{row.face.path} (face {row.face.index})")
         self.rank_badge.setText(rank_text(rank))
@@ -301,8 +345,8 @@ class MaterialCard(QFrame):
             self.rank_badge.setProperty("main", rank == 0)
             _restyle(self.rank_badge)
         self.base_badge.setVisible(is_base)
-        self.up_button.setEnabled(rank > 0)
-        self.down_button.setEnabled(rank < count - 1)
+        self._can_move = (rank > 0, rank < count - 1)
+        self._apply_enabled()
         self.weight_combo.blockSignals(True)
         self.scale_spin.blockSignals(True)
         try:
@@ -316,6 +360,29 @@ class MaterialCard(QFrame):
         finally:
             self.weight_combo.blockSignals(False)
             self.scale_spin.blockSignals(False)
+        self._refresh_adjust_title()
+
+    def set_locked(self, locked: bool) -> None:
+        """A forge is running: ▲▼ and the Adjust fields are off (the sample line and plan line stay live)."""
+        self._locked = bool(locked)
+        self._apply_enabled()
+
+    def is_locked(self) -> bool:
+        return self._locked
+
+    def shown_wght(self) -> float | None:
+        """The weight-axis value the sample line is drawn at (None for a font without a weight axis)."""
+        return self._shown_wght
+
+    def _apply_enabled(self) -> None:
+        up, down = self._can_move
+        self.up_button.setEnabled(up and not self._locked)
+        self.down_button.setEnabled(down and not self._locked)
+        self.weight_combo.setEnabled(not self._locked)
+        self.scale_spin.setEnabled(not self._locked)
+
+    def _refresh_adjust_title(self) -> None:
+        self.adjust_button.setText(adjust_title(self.weight(), self.scale()))
 
     def set_share(self, codepoints: set[int] | None) -> None:
         """The plan line: None while the plan is pending, the badge when the share is empty, else the summary."""
@@ -342,6 +409,7 @@ class MaterialCard(QFrame):
         return percent_scale(self.scale_spin.value())
 
     def _emit_adjust(self, *_args) -> None:
+        self._refresh_adjust_title()   # materialsChanged refreshes it too; this keeps it right if the model declines
         self.adjustChanged.emit(self.key, self.weight(), self.scale())
 
 
@@ -354,6 +422,7 @@ class CheckPage(QWidget):
         self.preview = preview
         self.cards: list[MaterialCard] = []
         self._table_groups: list[str] = []
+        self._locked = False
         self.setObjectName("checkPage")
         self.setStyleSheet(STYLE)
 
@@ -424,6 +493,12 @@ class CheckPage(QWidget):
         self.table_title = QLabel("Who supplies what")
         self.table_title.setObjectName("sectionTitle")
         right_layout.addWidget(self.table_title)
+        self.glyph_warning_label = QLabel("")     # amber callout: the model's word on the glyph budget
+        self.glyph_warning_label.setObjectName("glyphWarning")
+        self.glyph_warning_label.setWordWrap(True)
+        self.glyph_warning_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        self.glyph_warning_label.hide()
+        right_layout.addWidget(self.glyph_warning_label)
         self.table = QTableWidget(0, len(TABLE_COLUMNS))
         self.table.setObjectName("suppliers")
         self.table.setHorizontalHeaderLabels(TABLE_COLUMNS)
@@ -493,6 +568,24 @@ class CheckPage(QWidget):
         item = self.table.item(row, column) if row is not None else None
         return item.text() if item is not None else ""
 
+    def is_locked(self) -> bool:
+        return self._locked
+
+    def set_locked(self, locked: bool) -> None:
+        """While a forge runs nothing here may change the spec: every card control (▲▼, Adjust), the
+        'Supplied by' combos and the Advanced fields are disabled. The previews and the table stay live."""
+        locked = bool(locked)
+        if locked == self._locked:
+            return
+        self._locked = locked
+        for card in self.cards:
+            card.set_locked(locked)
+        self._apply_advanced_enabled()
+        for g in self._table_groups:
+            combo = self.supplier_combo(g)
+            if combo is not None:
+                combo.setEnabled(not locked)
+
     # ----- model -> widgets -----
     def _on_materials_changed(self) -> None:
         rows = self.model.rows
@@ -503,6 +596,7 @@ class CheckPage(QWidget):
         self.placeholder.setVisible(not rows)
         self._refresh_advanced()
         self._rebuild_table()
+        self._refresh_glyph_warning()
 
     def _on_plan_changed(self, plan: Plan | None) -> None:
         rows = self.model.rows
@@ -523,6 +617,7 @@ class CheckPage(QWidget):
             for i, card in enumerate(self.cards):
                 card.set_share(plan.assignments.get(i, set()))
         self._refresh_missing()
+        self._refresh_glyph_warning()
 
     def _on_sample_edited(self, _text: str) -> None:
         self._refresh_missing()
@@ -534,9 +629,11 @@ class CheckPage(QWidget):
             card.deleteLater()
         self.cards = []
         base = self.model.base_index()
+        default_weight = self.model.default_weight
         first = self.cards_layout.indexOf(self.placeholder) + 1
         for i, row in enumerate(rows):
-            card = MaterialCard(row, i, len(rows), i == base)
+            card = MaterialCard(row, i, len(rows), i == base, default_weight=default_weight)
+            card.set_locked(self._locked)
             card.moveRequested.connect(self._on_move_requested)
             card.adjustChanged.connect(self._on_adjust_changed)
             self.cards_layout.insertWidget(first + i, card)
@@ -544,8 +641,9 @@ class CheckPage(QWidget):
 
     def _update_cards(self, rows: list[MaterialRow]) -> None:
         base = self.model.base_index()
+        default_weight = self.model.default_weight
         for i, (card, row) in enumerate(zip(self.cards, rows)):
-            card.update_from(row, i, len(rows), i == base)
+            card.update_from(row, i, len(rows), i == base, default_weight)
 
     def _refresh_advanced(self) -> None:
         rows = self.model.rows
@@ -559,7 +657,6 @@ class CheckPage(QWidget):
             for row in rows:
                 self.base_combo.addItem(row.face.display_name)
             self.base_combo.setCurrentIndex(base_index + 1 if base_index is not None else 0)
-            self.base_combo.setEnabled(bool(rows))
             text = weight_choice(self.model.default_weight)
             i = self.default_weight_combo.findText(text)
             if i < 0:
@@ -570,6 +667,18 @@ class CheckPage(QWidget):
         finally:
             for w in (self.base_combo, self.default_weight_combo, self.default_scale_spin):
                 w.blockSignals(False)
+        self._apply_advanced_enabled()
+
+    def _apply_advanced_enabled(self) -> None:
+        self.base_combo.setEnabled(bool(self.model.rows) and not self._locked)
+        self.default_weight_combo.setEnabled(not self._locked)
+        self.default_scale_spin.setEnabled(not self._locked)
+
+    def _refresh_glyph_warning(self) -> None:
+        """The model's warning about the glyph budget (an API the model may not have yet), as an amber callout."""
+        text = str(getattr(self.model, "glyph_warning", lambda: "")() or "")
+        self.glyph_warning_label.setText(text)
+        self.glyph_warning_label.setVisible(bool(text))
 
     def _rebuild_table(self) -> None:
         rows = self.model.rows
@@ -577,6 +686,7 @@ class CheckPage(QWidget):
         keys = [f.key for f in faces]
         counts = smart.group_counts(faces)
         covered = [g for g in GROUP_IDS if any(counts[k][g] for k in keys)]
+        self.show_all_button.setVisible(len(covered) < len(GROUP_IDS))   # nothing to reveal when all are covered
         shown = list(GROUP_IDS) if self.show_all_button.isChecked() else covered
         rules = self.model.script_rules() if rows else {}
         pins = self.model.pins
@@ -599,6 +709,7 @@ class CheckPage(QWidget):
             pinned = pins.get(g)
             combo.setCurrentIndex(keys.index(pinned) + 1 if pinned in keys else 0)
             combo.setToolTip("Which font draws this script. Auto picks the highest font in your list that covers it well.")
+            combo.setEnabled(not self._locked)
             combo.currentIndexChanged.connect(lambda index, g=g: self._on_supplier_chosen(g, index))
             self.table.setCellWidget(r, COL_SUPPLIER, combo)
             ranked = sorted((k for k in keys if counts[k][g]), key=lambda k: (-counts[k][g], keys.index(k)))
@@ -611,10 +722,13 @@ class CheckPage(QWidget):
     def _refresh_missing(self) -> None:
         missing = self.preview.missing_characters() if self.preview.in_plan_mode() else []
         if missing:
-            self.missing_label.setText(MISSING_PREFIX + " ".join(missing))
+            shown = " ".join(missing[:MAX_MISSING_CHARS]) + (" …" if len(missing) > MAX_MISSING_CHARS else "")
+            self.missing_label.setText(MISSING_PREFIX + shown)
+            self.missing_label.setToolTip(" ".join(missing))
             self.missing_label.show()
         else:
             self.missing_label.setText("")
+            self.missing_label.setToolTip("")
             self.missing_label.hide()
 
     # ----- widgets -> model -----

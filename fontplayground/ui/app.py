@@ -8,7 +8,8 @@ from pathlib import Path
 
 from PySide6.QtCore import QTimer, QUrl
 from PySide6.QtGui import QDesktopServices, QFont
-from PySide6.QtWidgets import QApplication, QFileDialog, QMainWindow, QMessageBox, QStackedWidget, QVBoxLayout, QWidget
+from PySide6.QtWidgets import (QApplication, QFileDialog, QMainWindow, QMenu, QMessageBox, QStackedWidget, QVBoxLayout,
+                               QWidget)
 
 from fontplayground.catalog.cache import CatalogCache
 from fontplayground.paths import config_dir, default_font_dirs
@@ -41,6 +42,15 @@ def _read_json(path: Path, default):
 def _write_json(path: Path, data) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+
+
+def text_is_save(text: str) -> bool:
+    """True while the primary button offers to save (it then also gets the 'Choose location…' menu)."""
+    return text.startswith("Save to")
+
+
+def plural(n: int, word: str) -> str:
+    return f"{n} {word}" if n == 1 else f"{n} {word}s"
 
 
 class MainWindow(QMainWindow):
@@ -98,6 +108,8 @@ class MainWindow(QMainWindow):
         self.tray.backClicked.connect(lambda: self.go(self.step() - 1))
         self.tray.primaryClicked.connect(self._primary)
         self.tray.addClicked.connect(lambda: self.go(PICK))
+        self._primary_menu = QMenu(self)
+        self._primary_menu.addAction("Choose location…", self.forge_page.choose_output)
         self.forge_page.startOverClicked.connect(self.start_over)
         self.forge_page.primaryStateChanged.connect(self._update_navigation)
         self.model.materialsChanged.connect(self._update_navigation)
@@ -122,21 +134,30 @@ class MainWindow(QMainWindow):
         self.tray.set_back_visible(step > PICK)
         if step == FORGE:
             self.forge_page.activate()
+        elif step == PICK:
+            self.pick_page.search.setFocus()
         self._update_navigation()
 
     def _update_navigation(self, *_args) -> None:
         has_fonts = bool(self.model.rows)
         problem = self.model.validity()
+        busy = self.model.is_busy()
+        step = self.step()
         self.rail.set_reachable(CHECK, has_fonts)
         self.rail.set_reachable(FORGE, has_fonts and not problem)
-        step = self.step()
+        # The lock while forging is decided here, after reachability, so nothing re-enables the steps.
+        for i in (PICK, CHECK, FORGE):
+            self.rail.buttons[i].setEnabled(self.rail.is_reachable(i) and (not busy or i == step))
+        self.tray.back_button.setEnabled(not busy)
+        text = ""
         if step == PICK:
             self.tray.set_primary("Next: Check ›", has_fonts, "" if has_fonts else "Add at least one font.")
         elif step == CHECK:
-            self.tray.set_primary("Next: Forge ›", not problem, problem)
+            self.tray.set_primary("Next: Forge ›", not problem and not busy, problem)
         else:
             text, enabled = self.forge_page.primary_state()
             self.tray.set_primary(text, enabled)
+        self.tray.set_primary_menu(self._primary_menu if step == FORGE and text_is_save(text) else None)
         current = self.statusBar().currentMessage()
         if problem and has_fonts:
             self.statusBar().showMessage(problem)
@@ -150,16 +171,14 @@ class MainWindow(QMainWindow):
             self.forge_page.primary_clicked()
 
     def _on_busy(self, busy: bool) -> None:
-        for i in (PICK, CHECK):
-            self.rail.buttons[i].setEnabled((not busy or i == self.step()) and self.rail.is_reachable(i))
         self.tray.list.setEnabled(not busy)
         self.tray.add_button.setEnabled(not busy)
+        self.pick_page.set_locked(busy)
+        self.check_page.set_locked(busy)
         self._update_navigation()
 
     def start_over(self) -> None:
-        self.model.discard_result()
-        for key in list(self.model.keys()):
-            self.model.remove(key)
+        self.model.reset()
         self.go(PICK)
 
     # ----- scanning -----
@@ -188,14 +207,19 @@ class MainWindow(QMainWindow):
         self.rail.add_folder_action.setEnabled(True)
         msg = f"{len(result.faces)} font faces found"
         if result.failed:
-            msg += f", {len(result.failed)} unreadable files skipped"
+            msg += f", {plural(len(result.failed), 'unreadable file')} skipped"
         self.statusBar().showMessage(msg, 10000)
         faces = self.pick_page.faces_by_key()
         self._restoring = True
         try:
             self.model.set_catalog(faces)
             if self._pending_restore:
-                self.model.from_settings(self._pending_restore, faces)
+                try:
+                    self.model.from_settings(self._pending_restore, faces)
+                except Exception:  # a hand-edited or damaged settings file must not take the app down
+                    logging.getLogger(__name__).exception("could not restore the last forge settings")
+                    self.model.reset()
+                    self.statusBar().showMessage("Could not restore the last forge settings; starting fresh.", 10000)
                 self._pending_restore = None
         finally:
             self._restoring = False

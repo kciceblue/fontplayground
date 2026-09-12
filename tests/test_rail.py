@@ -76,3 +76,11 @@ def test_overflow_menu_actions(qtbot):
         rail.rescan_action.trigger()
     with qtbot.waitSignal(rail.start_over_action.triggered, timeout=1000):
         rail.start_over_action.trigger()
+
+
+def test_overflow_button_never_takes_focus(qtbot):
+    rail = _rail(qtbot)
+    assert rail.menu_button.focusPolicy() == Qt.FocusPolicy.NoFocus
+    assert [b.focusPolicy() for b in rail.buttons] == [Qt.FocusPolicy.NoFocus] * 3   # the step buttons keep theirs
+    rail.menu_button.setFocus()
+    assert not rail.menu_button.hasFocus()

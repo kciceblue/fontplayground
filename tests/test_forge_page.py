@@ -7,11 +7,12 @@ import pytest
 from PySide6.QtWidgets import QFileDialog, QMessageBox
 
 from fontplayground.catalog.face import read_faces
-from fontplayground.engine.spec import ForgeError, ForgeReport, MaterialReport
+from fontplayground.engine.spec import ForgeError, ForgeReport, MaterialReport, Plan
 from fontplayground.ui import forge_page
 from fontplayground.ui import workers
 from fontplayground.ui.forge_page import (HINT_ARRIVE, HINT_CANCELLED, HINT_STALE, STATE_FORGING, STATE_READY,
-                                          STATE_RESULT, ForgePage, compact_path, short_path, summary_sentence)
+                                          STATE_RESULT, ForgePage, compact_path, plan_tallies, ranked_groups,
+                                          short_path, summary_sentence, supplied_text)
 from fontplayground.ui.model import ForgeModel
 from fontplayground.ui.preview import PreviewWidget
 from tests.fixtures import cps, fake_face
@@ -102,9 +103,40 @@ def test_path_helpers_and_summary_sentence():
     materials = [MaterialReport("Segoe UI Regular", 10, ["latin", "greek", "cyrillic", "symbols", "other"]),
                  MaterialReport("Microsoft YaHei Regular", 20, ["han", "kana"]),
                  MaterialReport("Spare Bold", 0, [])]
-    assert summary_sentence(materials) == ("Segoe UI Regular supplied Latin, Greek, Cyrillic, Punctuation & symbols …"
+    # without tallies the report's order stands; four entries fit, the last one being "…" when there are more
+    assert summary_sentence(materials) == ("Segoe UI Regular supplied Latin, Greek, Cyrillic, …"
                                            " · Microsoft YaHei Regular supplied Han, Kana · Spare Bold supplied nothing")
     assert "Everything else" in summary_sentence(materials, limit=None)
+    assert summary_sentence(materials, limit=5).startswith("Segoe UI Regular supplied Latin, Greek, Cyrillic, "
+                                                          "Punctuation & symbols, Everything else · ")
+
+
+def test_summary_orders_by_what_was_supplied_and_drops_the_crumbs():
+    """The report lists groups in GROUPS order; the sentence names them by how much each material supplied."""
+    yahei = MaterialReport("Microsoft YaHei Regular", 21_500,
+                           ["latin", "greek", "kana", "han", "cjk_symbols", "symbols", "other"])
+    tally = {"han": 20_000, "cjk_symbols": 600, "kana": 300, "symbols": 250, "other": 240, "latin": 100, "greek": 10}
+    # latin (100) and greek (10) are under 1 % of 21,500: dropped; five remain, so three are named then "…"
+    assert ranked_groups(yahei.groups, tally) == ["han", "cjk_symbols", "kana", "symbols", "other"]
+    assert supplied_text(yahei, tally) == "Microsoft YaHei Regular supplied Han, CJK symbols & fullwidth, Kana, …"
+    assert supplied_text(yahei, tally, limit=None) == \
+        "Microsoft YaHei Regular supplied Han, CJK symbols & fullwidth, Kana, Punctuation & symbols, Everything else"
+    assert supplied_text(yahei, tally, limit=None, min_share=0).endswith(", Everything else, Latin, Greek")
+    assert ranked_groups(yahei.groups, None) == list(yahei.groups)                       # no tally: as given
+    assert ranked_groups(["han", "kana"], {"han": 5, "kana": 5}) == ["kana", "han"]     # ties keep GROUPS order
+    assert ranked_groups(["kana", "han"], {"han": 5, "kana": 5}) == ["kana", "han"]
+    assert ranked_groups(["han", "kana"], {"han": 0, "kana": 0}) == ["kana", "han"]     # nothing supplied: none dropped
+    assert ranked_groups(["han", "kana", "latin"], {"han": 99, "kana": 1}) == ["han", "kana"]   # 1 % exactly stays
+    exactly_four = MaterialReport("X", 4, ["latin", "greek", "cyrillic", "hebrew"])
+    assert supplied_text(exactly_four, {"hebrew": 4, "cyrillic": 3, "greek": 2, "latin": 1}) == \
+        "X supplied Hebrew, Cyrillic, Greek, Latin"                                     # four fit without "…"
+    assert supplied_text(MaterialReport("Y", 0, []), {}) == "Y supplied nothing"
+    plan = Plan({0: {0x41, 0x42, 0x3B1}, 1: {0x4E00, 0x3002}, 2: set()},
+                {0x41: 0, 0x42: 0, 0x3B1: 0, 0x4E00: 1, 0x3002: 1})
+    assert plan_tallies(plan) == [{"latin": 2, "greek": 1}, {"han": 1, "cjk_symbols": 1}, {}]
+    two = [MaterialReport("A", 3, ["latin", "greek"]), MaterialReport("B", 2, ["han", "cjk_symbols"])]
+    assert summary_sentence(two, plan_tallies(plan)) == "A supplied Latin, Greek · B supplied Han, CJK symbols & fullwidth"
+    assert summary_sentence(two, plan_tallies(plan)[:1]) == summary_sentence(two)       # a mismatch: ignored
 
 
 # ----- form ------------------------------------------------------------------------------------------
@@ -142,6 +174,11 @@ def test_change_button_asks_for_a_file(qtbot, page, model, monkeypatch, tmp_path
     monkeypatch.setattr(QFileDialog, "getSaveFileName", lambda *args, **kw: ("", ""))
     page.change_button.click()                # cancelled: nothing changes
     assert model.output == chosen
+    other = str(tmp_path / "other.ttf")       # the public entry point (the tray's ▾ menu) does the same
+    monkeypatch.setattr(QFileDialog, "getSaveFileName",
+                        lambda *args, **kw: asked.append(args[1:]) or (other, "TrueType font (*.ttf)"))
+    page.choose_output()
+    assert asked[-1] == ("Save the font as", chosen, "TrueType font (*.ttf)") and model.output == other
 
 
 # ----- ready state -----------------------------------------------------------------------------------
@@ -270,7 +307,7 @@ def test_save_asks_before_replacing_a_file_it_did_not_write(qtbot, page, model, 
     assert len(asked) == 2
 
 
-def test_cancel_returns_to_the_ready_state(qtbot, page, model, forge_waits_for_cancel):
+def test_cancel_returns_to_the_ready_state(qtbot, page, model, forge_waits_for_cancel, tmp_path):
     page.activate()
     assert model.is_busy() and page.state() == STATE_FORGING
     assert page.primary_state() == ("Forging…", False)
@@ -284,15 +321,25 @@ def test_cancel_returns_to_the_ready_state(qtbot, page, model, forge_waits_for_c
     assert page.hint_label.text() == HINT_CANCELLED and "Rebuild" in page.hint_label.text()
     assert page.primary_state() == ("Rebuild", True) and page.preview.in_plan_mode()
     assert model.result_path is None
+    model.set_output(str(tmp_path / "elsewhere.ttf"))   # where the file goes does not change the forge
+    assert page.hint_label.text() == HINT_CANCELLED
+    model.set_sample_text("zzz")                        # nor does the sample
+    assert page.hint_label.text() == HINT_CANCELLED
+    model.set_style("Heavy")                            # a name does: the hint says settings changed
+    assert page.hint_label.text() == HINT_STALE == "Settings changed — press Rebuild."
+    assert "#777777" in page.hint_label.styleSheet()
 
 
 def test_failure_returns_to_the_ready_state_with_the_error(qtbot, tmp_path):
-    ghost = fake_face(cps("ab"), path=str(tmp_path / "missing.ttf"), family="Ghost")
+    bogus = tmp_path / "bogus.ttf"
+    bogus.write_bytes(b"not a font at all")   # it exists (so the spec is valid) but cannot be prepared
+    ghost = fake_face(cps("ab"), path=str(bogus), family="Ghost")
     model = ForgeModel()
     model.add(ghost)
     page = ForgePage(model, PreviewWidget(sizes=(12,)))
     qtbot.addWidget(page)
     page.show()
+    assert model.validity() == ""
     with qtbot.waitSignal(model.resultFailed, timeout=60000):
         page.activate()
         assert page.state() == STATE_FORGING
@@ -301,6 +348,16 @@ def test_failure_returns_to_the_ready_state_with_the_error(qtbot, tmp_path):
     assert page.hint_label.text().endswith(" Press Rebuild to try again.")
     assert "Traceback" in page.hint_label.toolTip() and "#b3261e" in page.hint_label.styleSheet()
     assert page.primary_state() == ("Rebuild", True)
+    # a change to the materials clears the failure: the hint goes back to "Settings changed"
+    model.set_adjust(ghost.key, 700, None)
+    assert page.hint_label.text() == HINT_STALE and page.hint_label.toolTip() == ""
+    assert "#777777" in page.hint_label.styleSheet() and page.primary_state() == ("Rebuild", True)
+    with qtbot.waitSignal(model.resultFailed, timeout=60000):   # a fresh attempt starts clean and fails again
+        page.activate()
+        assert page.state() == STATE_FORGING
+    assert page.hint_label.text().startswith("Forging failed: ")
+    model.remove(ghost.key)                   # the spec problem outranks the failure
+    assert page.hint_label.text() == "Can't forge yet — Add at least one font."
 
 
 # ----- result card buttons ---------------------------------------------------------------------------
@@ -366,6 +423,104 @@ def test_start_over_details_and_warnings(qtbot, page, model, fake_forge):
     assert page.preview.current_family() == "Fixture A"   # the fake result is a copy of fixture A
     model.set_sample_text("abc 漢")
     assert page.missing_label.text() == "Not in this font: 漢"   # the real result, not the plan
+
+
+def test_new_result_forgets_what_was_saved_and_installed(qtbot, page, model, faces, fake_forge, tmp_path, monkeypatch):
+    a, b = faces
+    monkeypatch.setattr(forge_page.install, "is_supported", lambda: True)
+    monkeypatch.setattr(forge_page.install, "install_font_for_user", lambda path, full_name=None: Path(path))
+    _forge(qtbot, page, model)
+    out = tmp_path / "out.ttf"
+    model.set_output(str(out))
+    assert page.saved_for() is None and not page.open_folder_button.isEnabled()
+    page.install_button.click()
+    assert page.saved_for() == (model.result_path, str(out)) and page.open_folder_button.isEnabled()
+    assert not page.saved_label.isHidden() and not page.remove_button.isHidden()
+    assert page.primary_state() == ("Saved ✓", True)
+    # Open folder only leads somewhere while the output path is the one this result was saved to
+    model.set_output(str(tmp_path / "elsewhere.ttf"))
+    assert not page.open_folder_button.isEnabled() and page.primary_state()[0].startswith("Save to")
+    model.set_output(str(out))
+    assert page.open_folder_button.isEnabled() and page.primary_state() == ("Saved ✓", True)
+    # a rebuild produces a new result: nothing about it is saved or installed yet
+    with qtbot.waitSignal(model.resultStale):
+        model.set_adjust(b.key, 600, None)
+    assert page.state() == STATE_READY
+    _forge(qtbot, page, model)
+    assert page.saved_for() is None and not page.open_folder_button.isEnabled()
+    assert page.saved_label.isHidden() and page.saved_label.text() == "" and page.remove_button.isHidden()
+    assert page.primary_state() == (f"Save to {compact_path(str(out))}", True)
+    page.remove_button.click()                # nothing installed from this result: nothing happens
+    assert page.saved_label.isHidden()
+    asked = []
+    monkeypatch.setattr(QMessageBox, "question", lambda *args, **kw: asked.append(args[2]) or QMessageBox.StandardButton.No)
+    page.primary_clicked()                    # this page wrote out.ttf itself: no question, just replaced
+    assert asked == [] and out.read_bytes() == Path(model.result_path).read_bytes()
+    assert page.saved_for() == (model.result_path, str(out)) and page.open_folder_button.isEnabled()
+    assert page.saved_label.isHidden()        # saved, not installed
+
+
+def test_reset_clears_the_page(qtbot, page, model, faces, fake_forge, tmp_path, monkeypatch):
+    monkeypatch.setattr(forge_page.install, "is_supported", lambda: True)
+    monkeypatch.setattr(forge_page.install, "install_font_for_user", lambda path, full_name=None: Path(path))
+    _forge(qtbot, page, model)
+    model.set_output(str(tmp_path / "out.ttf"))
+    page.install_button.click()
+    assert not page.saved_label.isHidden() and page.open_folder_button.isEnabled()
+    seen = []
+    page.primaryStateChanged.connect(lambda: seen.append(page.primary_state()))
+    model.reset()
+    assert page.state() == STATE_READY and page.preview.in_plan_mode()
+    assert page.saved_for() is None and not page.open_folder_button.isEnabled()
+    assert page.saved_label.isHidden() and page.saved_label.text() == "" and page.remove_button.isHidden()
+    assert page.hint_label.text() == "Can't forge yet — Add at least one font."
+    assert page.primary_state() == ("Rebuild", False) and seen[-1] == ("Rebuild", False)
+    assert page.family_edit.text() == "Forged" and page.recap_label.text() == "0 fonts · 0 characters"
+    page.remove_button.click()                # nothing to remove any more
+    assert page.saved_label.isHidden()
+
+
+def test_reset_after_a_failure_clears_the_error(qtbot, tmp_path):
+    bogus = tmp_path / "bogus.ttf"
+    bogus.write_bytes(b"not a font at all")
+    ghost = fake_face(cps("ab"), path=str(bogus), family="Ghost")
+    model = ForgeModel()
+    model.add(ghost)
+    page = ForgePage(model, PreviewWidget(sizes=(12,)))
+    qtbot.addWidget(page)
+    page.show()
+    with qtbot.waitSignal(model.resultFailed, timeout=60000):
+        page.activate()
+    assert page.hint_label.text().startswith("Forging failed: ")
+    model.reset()
+    assert page.hint_label.text() == "Can't forge yet — Add at least one font." and page.hint_label.toolTip() == ""
+    model.add(ghost)                          # back to a clean slate: no failure or change remembered
+    assert page.hint_label.text() == HINT_ARRIVE
+
+
+def test_page_works_with_a_model_that_has_no_reset_signal(qtbot, model, monkeypatch):
+    monkeypatch.setattr(model, "resetDone", None)   # an older model without the signal: the page must not insist
+    assert getattr(model, "resetDone", None) is None
+    page = ForgePage(model, PreviewWidget(sizes=(12,)))
+    qtbot.addWidget(page)
+    assert page.state() == STATE_READY and page.primary_state() == ("Rebuild", True)
+
+
+def test_summary_names_the_scripts_by_how_much_each_font_supplied(qtbot, page, model, faces, font_dir, monkeypatch):
+    a, b = faces
+    model.set_pin("latin", b.key)             # B now supplies its Latin (a, b) as well as Han and the comma
+
+    def forge(spec, output_path, progress=None):
+        shutil.copyfile(font_dir / "A.ttf", output_path)
+        return ForgeReport([MaterialReport("Fixture A Regular", 3, ["latin"]),
+                            MaterialReport("Fixture B Bold", 4, ["han", "cjk_symbols", "latin"])],   # GROUPS order
+                           7, 8, [], str(output_path))
+    monkeypatch.setattr(workers, "forge", forge)
+    _forge(qtbot, page, model)
+    assert page.summary_label.text() == ("Fixture A Regular supplied Latin"
+                                         " · Fixture B Bold supplied Latin, Han, CJK symbols & fullwidth")
+    assert page.summary_label.toolTip() == ("Fixture A Regular supplied Latin\n"
+                                            "Fixture B Bold supplied Latin, Han, CJK symbols & fullwidth")
 
 
 def test_primary_state_changed_fires_only_when_the_tuple_changes(qtbot, page, model, faces, fake_forge, tmp_path):

@@ -11,7 +11,9 @@ from functools import lru_cache
 from pathlib import Path
 
 from fontplayground.catalog.face import FontFace
+from fontplayground.engine.merge import MAX_GLYPHS
 from fontplayground.engine.scripts import GROUP_IDS, group_of
+from fontplayground.engine.spec import Plan
 
 FaceKey = tuple[str, int]
 
@@ -19,6 +21,10 @@ VENDOR_WORDS = frozenset({"microsoft", "ms", "adobe", "google"})
 MAX_FAMILY_NAME = 31            # the classic name-table limit that old Windows/Mac software still trips over
 FORGED_SUFFIX = "Forged"
 DEFAULT_WEIGHT_CLASS = 400
+MAIN_KEEP_DIVISOR = 10          # Main keeps a group when it covers at least a tenth of the best material's count
+OTHER_KEEP_DIVISOR = 2          # any other material needs at least half of the best count to take a group
+GLYPH_WARN = 58000              # estimated glyphs above which the UI warns that the 65,535-glyph limit is near
+VARIANT_FACTOR = 0.8            # the engine drops per-language variant glyphs: about 80 % of a face's glyphs survive
 _UNSAFE_FILENAME = re.compile(r'[<>:"/\\|?*\x00-\x1f]+')
 
 
@@ -67,16 +73,20 @@ def _count(counts_by_key: Mapping[FaceKey, Mapping[str, int]], key: FaceKey, gro
 
 def smart_supplier(group_id: str, counts_by_key: Mapping[FaceKey, Mapping[str, int]],
                    order_keys: Sequence[FaceKey]) -> FaceKey | None:
-    """The first material in priority order that covers at least half as much of the group as the best one.
+    """The first material in priority order that covers enough of the group, with a bias towards Main.
 
-    None when no material covers the group at all. A Latin-heavy main font keeps Latin even when a CJK
-    font with a token Latin range sits above it, and the CJK font gets Han whichever order they are in.
+    Main (the first key) keeps a group when it covers at least a tenth of what the best material covers
+    (MAIN_KEEP_DIVISOR); every other material needs at least half of the best count (OTHER_KEEP_DIVISOR).
+    So a Georgia-like Main with 120 punctuation characters keeps punctuation against a CJK font with 1,200,
+    while a Main with a token Han range (2 characters against 28,000) hands Han to the CJK font. None when
+    no material covers the group at all.
     """
     best = max((_count(counts_by_key, k, group_id) for k in order_keys), default=0)
     if best == 0:
         return None
-    for key in order_keys:
-        if _count(counts_by_key, key, group_id) * 2 >= best:
+    for i, key in enumerate(order_keys):
+        divisor = MAIN_KEEP_DIVISOR if i == 0 else OTHER_KEEP_DIVISOR
+        if _count(counts_by_key, key, group_id) * divisor >= best:
             return key
     return None
 
@@ -128,14 +138,44 @@ def default_output_path(family: str, style: str) -> Path:
     return Path.home() / "Documents" / f"{stem}.ttf"
 
 
+# ----- glyph budget ----------------------------------------------------------------------------
+def face_glyph_share(face: FontFace, assigned: int) -> int:
+    """Glyphs one material is expected to contribute when `assigned` of its code points are planned for it.
+
+    Its glyph count is scaled by the share of its character map that is used, then by VARIANT_FACTOR
+    because the engine drops per-language variant glyphs.
+    """
+    return round(face.glyph_count * assigned / max(len(face.codepoints), 1) * VARIANT_FACTOR)
+
+
+def estimate_glyphs(rows: Sequence, plan: Plan) -> int:
+    """Rough glyph count of the forged font: .notdef plus every material's share (face_glyph_share).
+
+    `rows` are the materials in plan order — MaterialRow/MaterialSpec-like objects (anything with a `face`)
+    or bare faces. A material the plan has no entry for contributes nothing.
+    """
+    total = 1
+    for i, row in enumerate(rows):
+        face = getattr(row, "face", row)
+        total += face_glyph_share(face, len(plan.assignments.get(i, ())))
+    return total
+
+
+def exceeds_glyph_budget(face: FontFace, main_glyphs: int) -> bool:
+    """True when adding `face` to a font that already needs `main_glyphs` glyphs would pass the TrueType limit."""
+    return face.glyph_count * VARIANT_FACTOR + main_glyphs > MAX_GLYPHS
+
+
 # ----- suggestions -----------------------------------------------------------------------------
 def suggest_materials(missing_cps: Iterable[int], catalog_faces: Iterable[FontFace], main_face: FontFace | None,
-                      limit: int = 3, exclude_keys: Iterable[FaceKey] = ()) -> list[FontFace]:
+                      limit: int = 3, exclude_keys: Iterable[FaceKey] = (), main_glyphs: int = 0) -> list[FontFace]:
     """Supported faces that cover some of the missing characters, best first, one per family.
 
     Within a family the face whose italic flag matches Main and whose weight is closest to Main's wins
     (400 when there is no Main). Families are ranked by how many missing characters the chosen face
-    covers; ties keep catalog order.
+    covers, but a face that would push the forged font past the 65,535-glyph limit (its glyphs × 0.8 on
+    top of `main_glyphs`, the glyphs the tray already needs) goes to the end; equal coverage prefers the
+    face with fewer glyphs; remaining ties keep catalog order.
     """
     missing = frozenset(missing_cps)
     if not missing or limit <= 0:
@@ -157,5 +197,10 @@ def suggest_materials(missing_cps: Iterable[int], catalog_faces: Iterable[FontFa
             families.append(face.family)
         if current is None or rank < current[0]:
             best_per_family[face.family] = (rank, face)
-    ranked = sorted(families, key=lambda fam: -len(missing & best_per_family[fam][1].codepoints))
+
+    def sort_key(fam: str) -> tuple[bool, int, int]:
+        face = best_per_family[fam][1]
+        return (exceeds_glyph_budget(face, main_glyphs), -len(missing & face.codepoints), face.glyph_count)
+
+    ranked = sorted(families, key=sort_key)  # stable: full ties keep catalog order
     return [best_per_family[fam][1] for fam in ranked[:limit]]

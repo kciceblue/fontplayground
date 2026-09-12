@@ -5,7 +5,8 @@ underneath). Right: the family's title and Style combo, a licence badge, the Pre
 computed against the tray, a collapsible Details strip and a large "Add to materials" toggle.
 
 Everything the page changes goes through the ForgeModel (add / remove / set_sample_text); the ✓ marks, the
-add button and the coverage line follow the model's signals.
+add button and the coverage line follow the model's signals. While a forge runs the app locks the page
+(set_locked): only the add button is disabled, browsing and previewing keep working.
 """
 from __future__ import annotations
 
@@ -20,7 +21,8 @@ from PySide6.QtWidgets import (QButtonGroup, QComboBox, QHBoxLayout, QHeaderView
 
 from fontplayground.catalog.face import FontFace
 from fontplayground.catalog.scanner import ScanResult
-from fontplayground.engine.scripts import GROUP_IDS, LABELS
+from fontplayground.engine.scripts import GROUP_IDS, LABELS, group_of
+from fontplayground.ui import smart
 from fontplayground.ui.model import ForgeModel
 from fontplayground.ui.preview import PreviewWidget
 
@@ -40,10 +42,14 @@ BADGE_LABELS = {**LABELS, "cjk_symbols": "CJK symbols", "symbols": "Symbols", "s
                 "emoji": "Emoji", "other": "Other"}
 MAX_BADGE_GROUPS = 4
 MAX_MISSING_CHARS = 20          # sample characters listed in the coverage line before "…" (the tooltip has them all)
+MIN_COVERED_CHARS = 20          # a group counts as "covered" on the coverage line from this many code points
+NO_GROUPS_TEXT = "only a few characters"          # 'Covers only a few characters': no group reaches the minimum
+ADDS_NOTHING_TEXT = "Adds nothing your sample still needs"
 DEFAULT_WEIGHT_CLASS = 400
 ADD_TEXT = "Add to materials"
 ADDED_TEXT = "✓ Added to materials (click to remove)"
 ADDED_MARK = " ✓"
+LOCKED_TOOLTIP = "Wait for the forge to finish"
 COLOR_MISSING, COLOR_OK, COLOR_MUTED, COLOR_TEXT = "#b3261e", "#2f8f46", "#777777", "#444444"
 
 STYLE = """
@@ -129,6 +135,22 @@ def default_face(faces: Sequence[FontFace], main: FontFace | None) -> FontFace |
     return ranked[1]
 
 
+def covered_groups(face: FontFace, minimum: int = MIN_COVERED_CHARS) -> list[str]:
+    """Group ids (GROUPS order) in which the face has at least `minimum` code points.
+
+    A Latin font with three Greek letters does not 'cover' Greek; the tree badges and Details keep the
+    any-code-point view (face.scripts), the coverage line uses this stricter one.
+    """
+    counts = smart.face_group_counts(face)
+    return [g for g in GROUP_IDS if counts[g] >= minimum]
+
+
+def groups_added(face: FontFace, missing_chars: Iterable[str]) -> list[str]:
+    """Group ids (GROUPS order) of the characters in `missing_chars` that the face can draw."""
+    found = {group_of(ord(c)) for c in missing_chars if ord(c) in face.codepoints}
+    return [g for g in GROUP_IDS if g in found]
+
+
 def face_info_text(face: FontFace) -> str:
     """The multi-line description shown under Details for one face."""
     if face.axes:
@@ -164,6 +186,7 @@ class PickPage(QWidget):
         self._current_family_item: QTreeWidgetItem | None = None
         self._pending_key: FaceKey | None = None   # the face to show again once a rescan has finished
         self._syncing = False
+        self._locked = False                       # a forge is running: the tray must not change
 
         self.setObjectName("pickPage")
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
@@ -394,6 +417,19 @@ class PickPage(QWidget):
         return [self.tree.topLevelItem(i).data(COL_NAME, FAMILY_ROLE) for i in range(self.tree.topLevelItemCount())
                 if not self.tree.topLevelItem(i).isHidden()]
 
+    def is_locked(self) -> bool:
+        return self._locked
+
+    # ----- lock -----
+    def set_locked(self, locked: bool) -> None:
+        """While a forge runs the materials must not change: the add button is disabled (with a tooltip that
+        says why). Browsing, searching, filtering and previewing keep working."""
+        locked = bool(locked)
+        if locked == self._locked:
+            return
+        self._locked = locked
+        self._refresh_add_button()
+
     # ----- selection -----
     def select_face(self, key: FaceKey) -> bool:
         """Expand the family, make the face the current row (previewing it) and scroll to it. False when unknown."""
@@ -472,7 +508,7 @@ class PickPage(QWidget):
     # ----- widgets -> model -----
     def _on_add_clicked(self) -> None:
         face = self._current_face
-        if face is None or not face.supported:
+        if face is None or not face.supported or self._locked:
             self._refresh_add_button()
             return
         if self.model.has(face.key):
@@ -603,15 +639,23 @@ class PickPage(QWidget):
                 button.setEnabled(True)
                 button.setText(ADD_TEXT)
                 button.setToolTip(f"Add {face.display_name} to your materials")
+            if self._locked:   # the text still says what the face is (added or not); only the click is off
+                button.setEnabled(False)
+                button.setToolTip(LOCKED_TOOLTIP)
         finally:
             button.blockSignals(False)
 
     def _refresh_coverage(self) -> None:
+        """'Covers <groups with ≥ 20 code points> · <what it does for the sample>'.
+
+        Empty tray: the sample characters the face lacks. Tray with fonts: the groups of the sample characters
+        no material covers yet that this face can draw (so a font adding nothing the sample needs says so).
+        """
         face = self._current_face
         if face is None:
             self._set_coverage("", COLOR_MUTED, "")
             return
-        covers = ", ".join(LABELS[g] for g in face.scripts) or "no characters"
+        covers = ", ".join(LABELS[g] for g in covered_groups(face)) or NO_GROUPS_TEXT
         tooltip = ""
         if self.model.has(face.key):
             tail, color = "In your materials", COLOR_OK
@@ -624,23 +668,17 @@ class PickPage(QWidget):
             else:
                 tail, color = "Covers your whole sample", COLOR_OK
         else:
-            covered = self._tray_groups()
-            adds = [g for g in face.scripts if g not in covered]
+            adds = groups_added(face, self.model.missing_sample_chars())
             if adds:
                 tail, color = "Would add to your sample: " + ", ".join(LABELS[g] for g in adds), COLOR_OK
             else:
-                tail, color = "Adds nothing your fonts do not already cover", COLOR_MUTED
+                tail, color = ADDS_NOTHING_TEXT, COLOR_MUTED
         self._set_coverage(f"Covers {covers} · {tail}", color, tooltip)
 
     def _set_coverage(self, text: str, color: str, tooltip: str) -> None:
         self.coverage_label.setText(text)
         self.coverage_label.setStyleSheet(f"color: {color}; background: transparent;")
         self.coverage_label.setToolTip(tooltip)
-
-    def _tray_groups(self) -> set[str]:
-        """Script groups the current plan covers: the union of the materials' groups (the planner keeps every
-        code point some material has), so this needs no wait for the debounced plan."""
-        return set().union(*(r.face.scripts for r in self.model.rows)) if self.model.rows else set()
 
     # ----- tree internals -----
     def _family_item(self, family: str) -> QTreeWidgetItem:
