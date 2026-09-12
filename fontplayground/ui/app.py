@@ -1,4 +1,4 @@
-"""Main window: Fonts tab + Forge tab, scanning, and settings persistence."""
+"""Main window: step rail + the three workflow pages + the materials tray."""
 from __future__ import annotations
 
 import json
@@ -6,19 +6,29 @@ import logging
 import sys
 from pathlib import Path
 
-from PySide6.QtWidgets import QApplication, QFileDialog, QMainWindow, QMessageBox, QTabWidget
+from PySide6.QtCore import QTimer, QUrl
+from PySide6.QtGui import QDesktopServices, QFont
+from PySide6.QtWidgets import QApplication, QFileDialog, QMainWindow, QMessageBox, QStackedWidget, QVBoxLayout, QWidget
 
 from fontplayground.catalog.cache import CatalogCache
-from fontplayground.engine.spec import ForgeSpec
 from fontplayground.paths import config_dir, default_font_dirs
-from fontplayground.ui.fonts_tab import FontsTab
-from fontplayground.ui.forge_tab import ForgeTab, clean_stale_results
+from fontplayground.ui.check_page import CheckPage
+from fontplayground.ui.forge_page import ForgePage
+from fontplayground.ui.model import ForgeModel, clean_stale_results
+from fontplayground.ui.pick_page import PickPage
 from fontplayground.ui.preview import PreviewWidget
+from fontplayground.ui.rail import StepRail
+from fontplayground.ui.tray import MaterialsTray
 from fontplayground.ui.workers import ScanWorker
 
-COMBINE_WAIT_MS = 180_000   # closing waits this long for a cancelled combine to reach its next stage boundary
+PICK, CHECK, FORGE = 0, 1, 2
+COMBINE_WAIT_MS = 180_000   # closing waits this long for a cancelled forge to reach its next stage boundary
 SCAN_WAIT_MS = 3_000        # closing waits this long for an interrupted scan to stop
-QUIT_QUESTION = "A combine is still running. Quit anyway?"
+QUIT_QUESTION = "A forge is still running. Quit anyway?"
+APP_STYLE = """
+QMainWindow { background: #fafafa; }
+QStatusBar { background: #ffffff; border-top: 1px solid #e3e3e3; }
+"""
 
 
 def _read_json(path: Path, default):
@@ -37,6 +47,7 @@ class MainWindow(QMainWindow):
     def __init__(self, font_dirs: list[Path], config_dir: Path, parent=None) -> None:
         super().__init__(parent)
         self.setWindowTitle("Font Playground")
+        self.setStyleSheet(APP_STYLE)
         self.font_dirs = [Path(d) for d in font_dirs]
         self.config_dir = Path(config_dir)
         self.config_dir.mkdir(parents=True, exist_ok=True)
@@ -46,34 +57,110 @@ class MainWindow(QMainWindow):
         self.forge_settings_path = self.config_dir / "forge_last.json"
         self._settings = _read_json(self.settings_path, {"extra_dirs": []})
         self._pending_restore = _read_json(self.forge_settings_path, None)
-        self.scan_worker: ScanWorker | None = None
-        self._pending_scan: bool | None = None   # use_cache of a scan requested while another was running
+        self._pending_scan: bool | None = None
         self._closing = False
-        self._forge_status = ""                  # what the forge tab last put in the status bar
-        clean_stale_results()                    # results of runs that did not get to discard them
+        self._restoring = False
+        self.scan_worker: ScanWorker | None = None
+        clean_stale_results()
 
-        self.fonts_preview = PreviewWidget()
-        self.forge_preview = PreviewWidget()
-        self.fonts_tab = FontsTab(self.fonts_preview)
-        self.forge_tab = ForgeTab(self.forge_preview)
-        self.tabs = QTabWidget()
-        self.tabs.addTab(self.fonts_tab, "Fonts")
-        self.tabs.addTab(self.forge_tab, "Forge")
-        self.setCentralWidget(self.tabs)
+        self.model = ForgeModel(self)
+        self.previews = [PreviewWidget() for _ in range(3)]
+        self.pick_page = PickPage(self.model, self.previews[PICK])
+        self.check_page = CheckPage(self.model, self.previews[CHECK])
+        self.forge_page = ForgePage(self.model, self.previews[FORGE])
+        self.rail = StepRail()
+        self.stack = QStackedWidget()
+        for page in (self.pick_page, self.check_page, self.forge_page):
+            self.stack.addWidget(page)
+        self.tray = MaterialsTray(self.model)
+
+        central = QWidget()
+        layout = QVBoxLayout(central)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+        layout.addWidget(self.rail)
+        layout.addWidget(self.stack, 1)
+        layout.addWidget(self.tray)
+        self.setCentralWidget(central)
         self.statusBar()
 
-        self.fonts_preview.sampleChanged.connect(self.forge_preview.set_sample_text)
-        self.forge_preview.sampleChanged.connect(self.fonts_preview.set_sample_text)
-        self.fonts_tab.selectionChanged.connect(self._on_selection_changed)
-        self.fonts_tab.goToForge.connect(lambda: self.tabs.setCurrentIndex(1))
-        self.fonts_tab.rescanRequested.connect(lambda: self.start_scan(use_cache=False))
-        self.fonts_tab.addFolderRequested.connect(self.add_folder)
-        self.forge_tab.settingsChanged.connect(self.save_forge_settings)
-        self.forge_tab.materialRemoved.connect(self._on_material_removed)
-        self.forge_tab.statusMessage.connect(self._on_forge_status)
-        self.forge_tab.busyChanged.connect(self._on_forge_busy)
+        self._save_timer = QTimer(self)
+        self._save_timer.setSingleShot(True)
+        self._save_timer.setInterval(300)
+        self._save_timer.timeout.connect(self.save_forge_settings)
 
+        self.rail.stepClicked.connect(self.go)
+        self.rail.rescan_action.triggered.connect(lambda: self.start_scan(use_cache=False))
+        self.rail.add_folder_action.triggered.connect(self.add_folder)
+        self.rail.start_over_action.triggered.connect(self.start_over)
+        self.rail.open_settings_action.triggered.connect(
+            lambda: QDesktopServices.openUrl(QUrl.fromLocalFile(str(self.config_dir))))
+        self.tray.backClicked.connect(lambda: self.go(self.step() - 1))
+        self.tray.primaryClicked.connect(self._primary)
+        self.tray.addClicked.connect(lambda: self.go(PICK))
+        self.forge_page.startOverClicked.connect(self.start_over)
+        self.forge_page.primaryStateChanged.connect(self._update_navigation)
+        self.model.materialsChanged.connect(self._update_navigation)
+        self.model.validityChanged.connect(self._update_navigation)
+        self.model.busyChanged.connect(self._on_busy)
+        for sig in (self.model.materialsChanged, self.model.namesChanged, self.model.sampleChanged):
+            sig.connect(self._schedule_save)
+
+        self.go(PICK)
         self.start_scan(use_cache=True)
+
+    # ----- navigation -----
+    def step(self) -> int:
+        return self.stack.currentIndex()
+
+    def go(self, step: int) -> None:
+        step = max(PICK, min(FORGE, step))
+        if step != self.step() and not self.rail.is_reachable(step):
+            return
+        self.stack.setCurrentIndex(step)
+        self.rail.set_step(step)
+        self.tray.set_back_visible(step > PICK)
+        if step == FORGE:
+            self.forge_page.activate()
+        self._update_navigation()
+
+    def _update_navigation(self, *_args) -> None:
+        has_fonts = bool(self.model.rows)
+        problem = self.model.validity()
+        self.rail.set_reachable(CHECK, has_fonts)
+        self.rail.set_reachable(FORGE, has_fonts and not problem)
+        step = self.step()
+        if step == PICK:
+            self.tray.set_primary("Next: Check ›", has_fonts, "" if has_fonts else "Add at least one font.")
+        elif step == CHECK:
+            self.tray.set_primary("Next: Forge ›", not problem, problem)
+        else:
+            text, enabled = self.forge_page.primary_state()
+            self.tray.set_primary(text, enabled)
+        current = self.statusBar().currentMessage()
+        if problem and has_fonts:
+            self.statusBar().showMessage(problem)
+        elif current and not current.endswith(("found", "skipped", "fonts…")):
+            self.statusBar().clearMessage()
+
+    def _primary(self) -> None:
+        if self.step() < FORGE:
+            self.go(self.step() + 1)
+        else:
+            self.forge_page.primary_clicked()
+
+    def _on_busy(self, busy: bool) -> None:
+        for i in (PICK, CHECK):
+            self.rail.buttons[i].setEnabled((not busy or i == self.step()) and self.rail.is_reachable(i))
+        self.tray.list.setEnabled(not busy)
+        self.tray.add_button.setEnabled(not busy)
+        self._update_navigation()
+
+    def start_over(self) -> None:
+        self.model.discard_result()
+        for key in list(self.model.keys()):
+            self.model.remove(key)
+        self.go(PICK)
 
     # ----- scanning -----
     def all_dirs(self) -> list[Path]:
@@ -81,35 +168,41 @@ class MainWindow(QMainWindow):
 
     def start_scan(self, use_cache: bool) -> None:
         if self.scan_worker is not None and self.scan_worker.isRunning():
-            # Remember the request; _on_scan_finished starts it. A no-cache request wins over a cached one.
-            self._pending_scan = use_cache if self._pending_scan is None else (self._pending_scan and use_cache)
+            self._pending_scan = False if self._pending_scan is False else use_cache
             return
-        self.fonts_tab.begin_scan()
+        self.pick_page.begin_scan()
+        self.rail.rescan_action.setEnabled(False)
+        self.rail.add_folder_action.setEnabled(False)
         self.statusBar().showMessage("Scanning fonts…")
         self.scan_worker = ScanWorker(self.all_dirs(), self.cache, use_cache, parent=self)
-        self.scan_worker.face_found.connect(self.fonts_tab.add_face)
-        self.scan_worker.progress.connect(self.fonts_tab.set_progress)
+        self.scan_worker.face_found.connect(self.pick_page.add_face)
+        self.scan_worker.progress.connect(self.pick_page.set_progress)
         self.scan_worker.finished_scan.connect(self._on_scan_finished)
         self.scan_worker.start()
 
     def _on_scan_finished(self, result) -> None:
         if self._closing or (self.scan_worker is not None and self.scan_worker.interrupted):
-            return  # a partial catalog: leave the ticks and the saved forge settings alone
-        self.fonts_tab.end_scan(result)
+            return
+        self.pick_page.end_scan(result)
+        self.rail.rescan_action.setEnabled(True)
+        self.rail.add_folder_action.setEnabled(True)
         msg = f"{len(result.faces)} font faces found"
         if result.failed:
             msg += f", {len(result.failed)} unreadable files skipped"
         self.statusBar().showMessage(msg, 10000)
-        if self._pending_restore:
-            faces = self.fonts_tab.faces_by_key()
-            spec = ForgeSpec.from_dict(self._pending_restore, faces)
-            self.fonts_tab.set_ticked([m.face.key for m in spec.materials])
-            self.forge_tab.from_settings(self._pending_restore, faces)
-            self._pending_restore = None
+        faces = self.pick_page.faces_by_key()
+        self._restoring = True
+        try:
+            self.model.set_catalog(faces)
+            if self._pending_restore:
+                self.model.from_settings(self._pending_restore, faces)
+                self._pending_restore = None
+        finally:
+            self._restoring = False
+        self._update_navigation()
         if self._pending_scan is not None:
             use_cache, self._pending_scan = self._pending_scan, None
-            if self.scan_worker is not None:
-                self.scan_worker.wait()  # run() has returned; let the thread exit so start_scan sees it idle
+            self.scan_worker.wait()
             self.start_scan(use_cache)
 
     def add_folder(self) -> None:
@@ -122,42 +215,33 @@ class MainWindow(QMainWindow):
             _write_json(self.settings_path, self._settings)
         self.start_scan(use_cache=True)
 
-    # ----- forge wiring -----
-    def _on_selection_changed(self, faces: list) -> None:
-        self.forge_tab.set_materials(faces)
-        self.save_forge_settings()
-
-    def _on_material_removed(self, key) -> None:
-        keys = [f.key for f in self.fonts_tab.selected_faces() if f.key != key]
-        self.fonts_tab.set_ticked(keys)
-
-    def _on_forge_status(self, text: str) -> None:
-        """Show the forge tab's validation error; clear it again only if it is still what the bar shows."""
-        bar = self.statusBar()
-        if text:
-            bar.showMessage(text)
-        elif bar.currentMessage() == self._forge_status:
-            bar.clearMessage()
-        self._forge_status = text
-
-    def _on_forge_busy(self, busy: bool) -> None:
-        self.fonts_tab.tree.setEnabled(not busy)  # ticks would change the materials under a running combine
+    # ----- persistence -----
+    def _schedule_save(self, *_args) -> None:
+        if not self._restoring and not self._closing:
+            self._save_timer.start()
 
     def save_forge_settings(self) -> None:
-        _write_json(self.forge_settings_path, self.forge_tab.to_settings())
+        if self._restoring:
+            return
+        _write_json(self.forge_settings_path, self.model.to_settings())
 
     def closeEvent(self, event) -> None:  # noqa: N802
-        if self.forge_tab.is_busy():
-            answer = QMessageBox.question(self, "Combine running", QUIT_QUESTION)
+        if self.model.is_busy():
+            answer = QMessageBox.question(self, "Font Playground", QUIT_QUESTION,
+                                          QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                                          QMessageBox.StandardButton.No)
             if answer != QMessageBox.StandardButton.Yes:
                 event.ignore()
                 return
-            self.forge_tab.cancel_combine(wait_ms=COMBINE_WAIT_MS)
+            self.model.cancel(wait_ms=COMBINE_WAIT_MS)
         self._closing = True
+        self._save_timer.stop()
+        if self._pending_restore is None:  # never overwrite settings that were not restored yet
+            self.save_forge_settings()
         if self.scan_worker is not None and self.scan_worker.isRunning():
             self.scan_worker.interrupt()
             self.scan_worker.wait(SCAN_WAIT_MS)
-        self.forge_tab.discard_result()
+        self.model.discard_result()
         super().closeEvent(event)
 
 
@@ -165,6 +249,8 @@ def main() -> None:
     logging.getLogger("fontTools").setLevel(logging.ERROR)  # timestamp/version warnings are noise here
     app = QApplication(sys.argv)
     app.setApplicationName("Font Playground")
+    if sys.platform.startswith("win"):
+        app.setFont(QFont("Segoe UI", 10))
     window = MainWindow(default_font_dirs(), config_dir())
     window.resize(1280, 820)
     window.show()
