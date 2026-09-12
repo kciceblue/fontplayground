@@ -19,6 +19,7 @@ from fontplayground.ui.model import ForgeModel, clean_stale_results
 from fontplayground.ui.pick_page import PickPage
 from fontplayground.ui.preview import PreviewWidget
 from fontplayground.ui.rail import StepRail
+from fontplayground.ui.theme import DEFAULT_PREFERENCE, PREFERENCES, Theme, ThemeManager
 from fontplayground.ui.tray import MaterialsTray
 from fontplayground.ui.workers import ScanWorker
 
@@ -27,8 +28,8 @@ COMBINE_WAIT_MS = 180_000   # closing waits this long for a cancelled forge to r
 SCAN_WAIT_MS = 3_000        # closing waits this long for an interrupted scan to stop
 QUIT_QUESTION = "A forge is still running. Quit anyway?"
 APP_STYLE = """
-QMainWindow { background: #fafafa; }
-QStatusBar { background: #ffffff; border-top: 1px solid #e3e3e3; }
+QMainWindow { background: $surface_sunken; }
+QStatusBar { background: $surface; border-top: 1px solid $border_soft; }
 """
 
 
@@ -53,11 +54,16 @@ def plural(n: int, word: str) -> str:
     return f"{n} {word}" if n == 1 else f"{n} {word}s"
 
 
+def theme_preference(settings: dict) -> str:
+    """The stored theme choice, or "system" when the file has none or something unexpected."""
+    value = settings.get("theme")
+    return value if value in PREFERENCES else DEFAULT_PREFERENCE
+
+
 class MainWindow(QMainWindow):
     def __init__(self, font_dirs: list[Path], config_dir: Path, parent=None) -> None:
         super().__init__(parent)
         self.setWindowTitle("Font Playground")
-        self.setStyleSheet(APP_STYLE)
         self.font_dirs = [Path(d) for d in font_dirs]
         self.config_dir = Path(config_dir)
         self.config_dir.mkdir(parents=True, exist_ok=True)
@@ -73,16 +79,22 @@ class MainWindow(QMainWindow):
         self.scan_worker: ScanWorker | None = None
         clean_stale_results()
 
+        # The manager pushes the palette before any widget exists, so every widget is born in the right colours.
+        self.theme_manager = ThemeManager(theme_preference(self._settings), self)
+        theme = self.theme_manager.theme
+        self.setStyleSheet(theme.render(APP_STYLE))
+
         self.model = ForgeModel(self)
-        self.previews = [PreviewWidget() for _ in range(3)]
-        self.pick_page = PickPage(self.model, self.previews[PICK])
-        self.check_page = CheckPage(self.model, self.previews[CHECK])
-        self.forge_page = ForgePage(self.model, self.previews[FORGE])
-        self.rail = StepRail()
+        self.previews = [PreviewWidget(theme=theme) for _ in range(3)]
+        self.pick_page = PickPage(self.model, self.previews[PICK], theme=theme)
+        self.check_page = CheckPage(self.model, self.previews[CHECK], theme=theme)
+        self.forge_page = ForgePage(self.model, self.previews[FORGE], theme=theme)
+        self.rail = StepRail(theme=theme)
+        self.rail.set_theme_preference(self.theme_manager.preference)
         self.stack = QStackedWidget()
         for page in (self.pick_page, self.check_page, self.forge_page):
             self.stack.addWidget(page)
-        self.tray = MaterialsTray(self.model)
+        self.tray = MaterialsTray(self.model, theme=theme)
 
         central = QWidget()
         layout = QVBoxLayout(central)
@@ -105,6 +117,8 @@ class MainWindow(QMainWindow):
         self.rail.start_over_action.triggered.connect(self.start_over)
         self.rail.open_settings_action.triggered.connect(
             lambda: QDesktopServices.openUrl(QUrl.fromLocalFile(str(self.config_dir))))
+        self.rail.themeChosen.connect(self._choose_theme)
+        self.theme_manager.changed.connect(self.apply_theme)
         self.tray.backClicked.connect(lambda: self.go(self.step() - 1))
         self.tray.primaryClicked.connect(self._primary)
         self.tray.addClicked.connect(lambda: self.go(PICK))
@@ -238,6 +252,18 @@ class MainWindow(QMainWindow):
             extra.append(folder)
             _write_json(self.settings_path, self._settings)
         self.start_scan(use_cache=True)
+
+    # ----- theme -----
+    def apply_theme(self, theme: Theme) -> None:
+        """Retint the window and every part of it (the manager has already pushed the palette)."""
+        self.setStyleSheet(theme.render(APP_STYLE))
+        for widget in (self.rail, self.pick_page, self.check_page, self.forge_page, self.tray, *self.previews):
+            widget.apply_theme(theme)
+
+    def _choose_theme(self, preference: str) -> None:
+        self.theme_manager.preference = preference
+        self._settings["theme"] = preference
+        _write_json(self.settings_path, self._settings)
 
     # ----- persistence -----
     def _schedule_save(self, *_args) -> None:

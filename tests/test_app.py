@@ -4,13 +4,15 @@ import shutil
 import time
 
 import pytest
+from PySide6.QtGui import QPalette
 from PySide6.QtWidgets import QFileDialog, QMessageBox
 
 from fontplayground.catalog import scanner
 from fontplayground.catalog.face import read_faces
 from fontplayground.engine.spec import ForgeError
-from fontplayground.ui import workers
-from fontplayground.ui.app import CHECK, FORGE, PICK, QUIT_QUESTION, MainWindow
+from fontplayground.ui import app, check_page, forge_page, pick_page, rail, tray, workers
+from fontplayground.ui.app import CHECK, FORGE, PICK, QUIT_QUESTION, MainWindow, theme_preference
+from fontplayground.ui.theme import DARK, LIGHT, contrast_ratio
 
 
 def _open(qtbot, font_dir, cfg):
@@ -260,3 +262,41 @@ def test_primary_offers_choose_location_after_a_result(qtbot, font_dir, tmp_path
         assert [a.text() for a in w._primary_menu.actions()] == ["Choose location…"]
     finally:
         _cleanup_result(w)
+
+
+def test_theme_preference_falls_back_to_system():
+    assert theme_preference({}) == "system"
+    assert theme_preference({"theme": "dark"}) == "dark"
+    assert theme_preference({"theme": "light"}) == "light"
+    assert theme_preference({"theme": "blue"}) == "system"
+    assert theme_preference({"theme": 3}) == "system"
+
+
+def test_dark_setting_starts_dark_and_the_font_list_stays_readable(qtbot, font_dir, tmp_path):
+    cfg = tmp_path / "cfg"
+    cfg.mkdir()
+    (cfg / "settings.json").write_text(json.dumps({"extra_dirs": [], "theme": "dark"}), encoding="utf-8")
+    w = _open(qtbot, font_dir, cfg)
+    assert w.theme_manager.preference == "dark" and w.rail.theme_actions["dark"].isChecked()
+    assert DARK.surface in w.pick_page.styleSheet() and DARK.surface in w.styleSheet()
+    text = w.pick_page.tree.palette().color(QPalette.ColorRole.Text).name()
+    assert contrast_ratio(text, DARK.surface) >= 4.5          # the reported bug: tree text vs tree background
+    assert w.pick_page.tree.palette().color(QPalette.ColorRole.Base).name() == DARK.surface
+
+
+def test_choosing_a_theme_retints_everything_and_persists(qtbot, font_dir, tmp_path):
+    w = _open(qtbot, font_dir, tmp_path / "cfg")
+    text = w.pick_page.tree.palette().color(QPalette.ColorRole.Text).name()
+    assert contrast_ratio(text, w.theme_manager.theme.surface) >= 4.5
+    w.rail.theme_actions["dark"].trigger()
+    assert w.theme_manager.preference == "dark"
+    saved = json.loads((tmp_path / "cfg" / "settings.json").read_text(encoding="utf-8"))
+    assert saved["theme"] == "dark" and saved["extra_dirs"] == []
+    # exact sheets, not a sentinel colour: DARK.on_accent is "#ffffff" too, so "LIGHT.surface not in …" would lie
+    for widget, template in ((w, app.APP_STYLE), (w.rail, rail.STYLE), (w.pick_page, pick_page.STYLE),
+                             (w.check_page, check_page.STYLE), (w.forge_page, forge_page.STYLE), (w.tray, tray.STYLE)):
+        assert widget.styleSheet() == DARK.render(template)
+    assert all(p._theme is DARK for p in w.previews)
+    w.rail.theme_actions["light"].trigger()
+    assert LIGHT.surface in w.pick_page.styleSheet()
+    assert json.loads((tmp_path / "cfg" / "settings.json").read_text(encoding="utf-8"))["theme"] == "light"
