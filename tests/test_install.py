@@ -25,6 +25,18 @@ def test_full_name_comes_from_the_name_table(font_dir):
     assert full_name_of(font_dir / "T.ttc") == "Fixture A & Fixture C"
 
 
+def test_is_forged_reads_the_notice_in_name_id_0(font_dir, tmp_path):
+    from fontplayground.engine.merge import FORGED_NOTICE
+    from tests.fixtures import build_font, cps
+    forged = build_font(tmp_path / "F.ttf", "Forged", "Regular", cps("ab"),
+                        name_records={0: [(3, 1, 0x409, f"{FORGED_NOTICE} from: Fixture A Regular")]})
+    assert install.is_forged(forged)
+    assert not install.is_forged(font_dir / "A.ttf")
+    assert not install.is_forged(tmp_path / "missing.ttf")
+    (tmp_path / "junk.ttf").write_bytes(b"not a font")
+    assert not install.is_forged(tmp_path / "junk.ttf")
+
+
 def test_registry_value_name():
     assert registry_value_name("Fixture A") == "Fixture A (TrueType)"
 

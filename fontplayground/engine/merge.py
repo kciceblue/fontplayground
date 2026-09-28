@@ -44,12 +44,15 @@ def _mac_roman_safe(value: str) -> bool:
         return False
 
 
+FORGED_NOTICE = "Forged with Font Playground"   # starts name ID 0 of every forged font (install.is_forged reads it)
+
+
 def set_names(font: TTFont, family: str, style: str, sources: list[str]) -> None:
     name = font["name"]
     name.names = []
     full = f"{family} {style}"
     records = {
-        0: "Forged with Font Playground from: " + ", ".join(sources),
+        0: f"{FORGED_NOTICE} from: " + ", ".join(sources),
         3: f"{full}; FontPlayground {date.today().isoformat()}",
         4: full,
         5: "Version 1.000",

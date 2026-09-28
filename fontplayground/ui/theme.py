@@ -49,10 +49,18 @@ class Theme:
     warn_border: str
     warn_text: str
     missing: str                # behind a character no font draws
+    mix_1: str                  # colour-by-font: the colour of font 1, 5, 9…
+    mix_2: str
+    mix_3: str
+    mix_4: str
 
     @property
     def tokens(self) -> dict[str, str]:
         return {f.name: getattr(self, f.name) for f in fields(self) if f.name != "name"}
+
+    def mix_colour(self, index: int) -> str:
+        """The colour-by-font colour of the font at `index` (0-based); four colours, then they repeat."""
+        return getattr(self, f"mix_{index % 4 + 1}")
 
     @property
     def is_dark(self) -> bool:
@@ -99,6 +107,7 @@ LIGHT = Theme(
     danger="#b3261e", danger_soft="#fff5f5", danger_soft_border="#f0b4b4", danger_soft_hover="#fee2e2",
     warn_soft="#fff6e0", warn_border="#f2c94c", warn_text="#7a4b00",
     missing="#ffb3b3",
+    mix_1="#1a6bd8", mix_2="#c2570c", mix_3="#2f8f46", mix_4="#7c3aed",
 )
 
 DARK = Theme(
@@ -112,6 +121,7 @@ DARK = Theme(
     danger="#ff7b72", danger_soft="#3a2224", danger_soft_border="#6b3a3a", danger_soft_hover="#4a2a2c",
     warn_soft="#3a3120", warn_border="#7a6a2a", warn_text="#f2c94c",
     missing="#7a2e2e",
+    mix_1="#6aa3ff", mix_2="#f5a25d", mix_3="#5cc27a", mix_4="#c79bff",
 )
 
 

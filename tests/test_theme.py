@@ -6,15 +6,29 @@ from PySide6.QtGui import QPalette
 from PySide6.QtWidgets import QLabel
 
 import fontplayground.ui.theme as theme_module
-from fontplayground.ui import app, check_page, forge_page, pick_page, rail, tray
+import importlib
 from fontplayground.ui.theme import (DARK, LIGHT, PREFERENCES, Theme, ThemeManager, contrast_ratio, placeholder_html,
                                      retint, tint)
 
 THEMES = [LIGHT, DARK]
-TEMPLATES = {
-    "app.APP_STYLE": app.APP_STYLE, "rail.STYLE": rail.STYLE, "pick_page.STYLE": pick_page.STYLE,
-    "check_page.STYLE": check_page.STYLE, "forge_page.STYLE": forge_page.STYLE, "tray.STYLE": tray.STYLE,
-}
+# Every stylesheet template of the UI modules; a module that does not exist yet (the mixer is being built) is skipped.
+TEMPLATE_MODULES = ("app", "preview", "preview_pane", "picker", "recipe", "advanced", "action_bar")
+
+
+def _templates() -> dict[str, str]:
+    found = {}
+    for name in TEMPLATE_MODULES:
+        try:
+            module = importlib.import_module(f"fontplayground.ui.{name}")
+        except ImportError:
+            continue
+        for attr in ("STYLE", "APP_STYLE"):
+            if isinstance(getattr(module, attr, None), str):
+                found[f"{name}.{attr}"] = getattr(module, attr)
+    return found
+
+
+TEMPLATES = _templates()
 HEX = re.compile(r"#(?:[0-9a-fA-F]{6}|[0-9a-fA-F]{3})\b")   # objectName selectors like #card never match
 NAMED = re.compile(r"\b(white|black|gray|grey|red|green|blue)\b")
 # (foreground, background, minimum WCAG ratio) — spec section 3
@@ -22,6 +36,7 @@ CONTRAST_RULE = [
     ("text", "surface", 4.5), ("text", "window", 4.5), ("text_secondary", "surface", 4.5),
     ("muted", "surface", 3.0), ("on_accent", "accent", 3.0), ("warn_text", "warn_soft", 3.0),
     ("ok", "ok_soft", 3.0), ("danger", "danger_soft", 3.0), ("text", "missing", 3.0),
+    ("mix_1", "surface", 3.0), ("mix_2", "surface", 3.0), ("mix_3", "surface", 3.0), ("mix_4", "surface", 3.0),
 ]
 
 
@@ -150,3 +165,10 @@ def test_manager_emits_only_when_the_effective_theme_moves(qapp):
     assert m.preference == "dark"
     m.preference = "light"
     assert seen == [DARK, LIGHT] and qapp.palette().color(QPalette.ColorRole.Base).name() == LIGHT.surface
+
+
+def test_mix_colours_repeat_every_four_fonts():
+    for theme in THEMES:
+        assert [theme.mix_colour(i) for i in range(5)] == [theme.mix_1, theme.mix_2, theme.mix_3, theme.mix_4,
+                                                           theme.mix_1]
+        assert len({theme.mix_1, theme.mix_2, theme.mix_3, theme.mix_4}) == 4

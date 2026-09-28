@@ -14,6 +14,8 @@ from pathlib import Path
 
 from fontTools.ttLib import TTCollection, TTFont
 
+from fontplayground.engine.merge import FORGED_NOTICE
+
 FONTS_KEY = r"Software\Microsoft\Windows NT\CurrentVersion\Fonts"
 REGISTRY_SUFFIX = " (TrueType)"
 WM_FONTCHANGE = 0x001D
@@ -56,6 +58,21 @@ def full_name_of(path: str | Path) -> str:
         return _full_name(font, p)
     finally:
         font.close()
+
+
+def is_forged(path: str | Path) -> bool:
+    """True when the file is a font this app forged (its name ID 0 starts with FORGED_NOTICE)."""
+    try:
+        font = TTFont(str(path), lazy=True, fontNumber=0)
+    except Exception:  # missing, unreadable or not a font
+        return False
+    try:
+        notice = font["name"].getDebugName(0) if "name" in font else None
+    except Exception:
+        return False
+    finally:
+        font.close()
+    return bool(notice) and notice.startswith(FORGED_NOTICE)
 
 
 def _full_name(font: TTFont, path: Path) -> str:

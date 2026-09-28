@@ -22,7 +22,7 @@ from fontplayground.engine.spec import ForgeSpec, MaterialSpec, Plan
 from fontplayground.ui import languages, smart
 from fontplayground.ui.languages import DEFAULT_SAMPLE, OLD_DEFAULT_SAMPLE
 from fontplayground.ui.mix import Mix, MixFont
-from fontplayground.ui.preview import font_loader
+from fontplayground.ui.fonts import font_loader
 from fontplayground.ui.textutil import visible_chars
 from fontplayground.ui.workers import CombineWorker
 
