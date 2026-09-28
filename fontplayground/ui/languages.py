@@ -131,11 +131,21 @@ def join_labels(langs: Iterable[Language], limit: int = MAX_ROLE_LANGUAGES, join
     return joiner.join(labels)
 
 
+def _enough_for_language(group_id: str, n: int) -> bool:
+    """True when n characters of the group would count for its language on their own (198 kana: Japanese)."""
+    lang = _BY_ID.get(GROUP_LANGUAGE.get(group_id, ""))
+    need = dict(lang.min_counts).get(group_id) if lang is not None else None
+    return need is not None and n >= need
+
+
 def _named_groups(tally: Mapping[str, int]) -> list[str]:
-    """Groups of the tally worth naming: largest first (GROUPS order on ties), those under MIN_SHARE dropped."""
+    """Groups of the tally worth naming, largest first (GROUPS order on ties): the largest, those with at least
+    MIN_SHARE of the characters, and those big enough to count for their language (a CJK font's 198 kana are
+    under 1 % of its 29,000 characters, yet they are what makes it draw Japanese)."""
     total = sum(tally.values())
     ranked = sorted((g for g, n in tally.items() if n > 0), key=lambda g: (-tally[g], GROUP_IDS.index(g)))
-    return [g for i, g in enumerate(ranked) if i == 0 or tally[g] >= MIN_SHARE * total]
+    return [g for i, g in enumerate(ranked)
+            if i == 0 or tally[g] >= MIN_SHARE * total or _enough_for_language(g, tally[g])]
 
 
 def role_title(tally: Mapping[str, int]) -> str:

@@ -61,6 +61,8 @@ def test_draws_text_in_plain_words():
 def test_role_title_names_languages_or_says_what_it_does():
     assert role_title({"han": 28195, "cjk_symbols": 465, "kana": 300, "symbols": 340}) == "FOR CHINESE & JAPANESE"
     assert role_title({"hangul": 11000, "han": 20}) == "FOR KOREAN"            # below 1 %: not a role
+    # Microsoft YaHei next to Segoe UI: 198 kana are under 1 %, but enough to count for Japanese
+    assert role_title({"han": 28195, "cjk_symbols": 465, "symbols": 340, "kana": 198}) == "FOR CHINESE & JAPANESE"
     assert role_title({"symbols": 40}) == "FOR SYMBOLS & EMOJI"               # symbols count when they are all it does
     assert role_title({}) == "ADDS NOTHING"
     assert role_title({"other": 5}) == "FILLS IN THE REST"
