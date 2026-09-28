@@ -7,7 +7,7 @@ from pathlib import Path
 
 from fontplayground.catalog.face import FontFace
 
-SCHEMA = 1  # bump when FontFace or the entry layout changes; older files are discarded wholesale
+SCHEMA = 2  # bump when FontFace, the entry layout or what read_faces reads changes; older files are discarded wholesale
 
 
 def _ranges(codepoints) -> list[list[int]]:

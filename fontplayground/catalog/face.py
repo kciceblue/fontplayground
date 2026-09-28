@@ -81,6 +81,37 @@ def _embedding(fs_type: int) -> str:
     return "installable"
 
 
+def _name_rank(record) -> int | None:
+    """Rank of a name record whose text decodes reliably, lower first; None for records left to fontTools."""
+    if record.platformID == 3 and record.platEncID in (0, 1, 10):  # Windows Unicode, what Windows itself shows
+        return 0 if record.langID == 0x409 else 1
+    if (record.platformID, record.platEncID) == (1, 1):  # Mac Japanese, which fontTools decodes as Shift-JIS
+        return 2
+    return None
+
+
+def _best_name(name, name_ids) -> str | None:
+    """The first of name_ids that has a name, read from its most reliably decoded record.
+
+    fontTools' getBestFamilyName takes any Mac record labelled English first, but some Japanese fonts (EPSON's) keep
+    Shift-JIS bytes in Mac Roman records, which then read as mojibake. Ranked records come first; the rest are left
+    to fontTools.
+    """
+    for name_id in name_ids:
+        ranked = [r for r in name.names if r.nameID == name_id and _name_rank(r) is not None]
+        for record in sorted(ranked, key=_name_rank):
+            try:
+                text = record.toUnicode()
+            except UnicodeDecodeError:
+                continue
+            if text:
+                return text
+        text = name.getDebugName(name_id)
+        if text:
+            return text
+    return None
+
+
 def _face(font: TTFont, path: Path, index: int, is_collection: bool, size: int, mtime: float) -> FontFace:
     name = font["name"]
     fvar = font["fvar"] if "fvar" in font else None
@@ -95,8 +126,8 @@ def _face(font: TTFont, path: Path, index: int, is_collection: bool, size: int, 
         outline = "none"
     return FontFace(
         path=str(path), index=index,
-        family=name.getBestFamilyName() or path.stem,
-        style=name.getBestSubFamilyName() or "Regular",
+        family=_best_name(name, (21, 16, 1)) or path.stem,
+        style=_best_name(name, (22, 17, 2)) or "Regular",
         outline=outline, is_collection=is_collection, is_variable=fvar is not None,
         axes=tuple((a.axisTag, float(a.minValue), float(a.defaultValue), float(a.maxValue)) for a in fvar.axes) if fvar else (),
         weight_class=int(os2.usWeightClass) if os2 else 400,
