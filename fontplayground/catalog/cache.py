@@ -7,7 +7,7 @@ from pathlib import Path
 
 from fontplayground.catalog.face import FontFace
 
-SCHEMA = 2  # bump when FontFace, the entry layout or what read_faces reads changes; older files are discarded wholesale
+SCHEMA = 3  # bump when FontFace, the entry layout or what read_faces reads changes; older files are discarded wholesale
 
 
 def _ranges(codepoints) -> list[list[int]]:
@@ -35,6 +35,8 @@ def face_from_dict(d: dict) -> FontFace:
     d = dict(d)
     d["codepoints"] = _expand(d["codepoints"])
     d["axes"] = tuple(tuple(a) for a in d["axes"])
+    d["local_names"] = tuple(d.get("local_names", ()))
+    d["group_counts"] = tuple((g, n) for g, n in d.get("group_counts", ()))
     return FontFace(**d)
 
 

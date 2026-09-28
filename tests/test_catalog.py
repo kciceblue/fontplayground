@@ -1,5 +1,6 @@
 import json
 import shutil
+from dataclasses import replace
 
 import pytest
 
@@ -14,6 +15,14 @@ def test_face_dict_roundtrip(font_dir):
     d = face_to_dict(v)
     assert d["codepoints"] == [[97, 98]] and d["axes"] == [["wght", 100.0, 400.0, 900.0]]
     assert face_from_dict(d) == v
+
+
+def test_face_dict_roundtrip_keeps_local_names_and_group_counts(font_dir):
+    (b,) = read_faces(font_dir / "B.otf")
+    b = replace(b, local_names=("测试", "テスト"))
+    back = face_from_dict(json.loads(json.dumps(face_to_dict(b))))
+    assert back == b and back.group_counts == (("latin", 2), ("han", 1), ("cjk_symbols", 1))
+    assert hash(back) == hash(b)                               # tuples again, not JSON lists
 
 
 def test_find_font_files(font_dir, tmp_path):

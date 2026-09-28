@@ -1,6 +1,7 @@
 import pytest
 
 from fontplayground.catalog.face import read_faces
+from fontplayground.engine.scripts import GROUP_IDS
 from tests.fixtures import build_font, cps, fake_face
 
 JA = "テスト明朝"
@@ -59,3 +60,32 @@ def test_style_comes_from_a_correctly_decoded_record(tmp_path):
     records = [(1, 0, 0, "標準".encode("shift_jis")), (3, 1, 0x411, "標準")]
     path = build_font(tmp_path / "S.ttf", "Fixture S", "Unused", cps("ab"), name_records={2: records})
     assert read_faces(path)[0].style == "標準"
+
+
+def test_local_names_come_from_non_english_windows_records(tmp_path):
+    path = build_font(tmp_path / "L.ttf", "Fixture L", "Regular", cps("a漢"), name_records={
+        1: [(3, 1, 0x409, "Fixture L"), (3, 1, 0x411, "テスト"), (3, 1, 0x804, "测试字体"), (3, 1, 0x404, "fixture l")],
+        16: [(3, 1, 0x409, "Fixture L"), (3, 1, 0x804, "测试")]})
+    face = read_faces(path)[0]
+    assert face.family == "Fixture L"
+    # zh-CN's typographic family beats its name ID 1; Japanese next; the one equal to the family is dropped
+    assert face.local_names == ("测试", "テスト")
+
+
+def test_local_names_fall_back_to_mac_japanese_records_and_are_empty_for_plain_fonts(tmp_path, font_dir):
+    path = build_font(tmp_path / "M.ttf", "Fixture M", "Regular", cps("a"), name_records={
+        1: [(3, 1, 0x409, "Fixture M"), (1, 1, 11, JA)]})
+    assert read_faces(path)[0].local_names == (JA,)
+    assert read_faces(font_dir / "A.ttf")[0].local_names == ()
+
+
+def test_group_counts_are_read_with_the_face(font_dir):
+    (b,) = read_faces(font_dir / "B.otf")                    # cps("ab漢，")
+    assert b.group_counts == (("latin", 2), ("han", 1), ("cjk_symbols", 1))
+    assert b.counts["han"] == 1 and b.counts["hangul"] == 0 and set(b.counts) == set(GROUP_IDS)
+
+
+def test_counts_fall_back_to_the_codepoints():
+    face = fake_face(cps("ab漢"))
+    assert face.group_counts == ()
+    assert face.counts["latin"] == 2 and face.counts["han"] == 1 and face.scripts == ["latin", "han"]
