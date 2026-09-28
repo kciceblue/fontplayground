@@ -7,7 +7,7 @@ from fontplayground.engine.merge import MAX_GLYPHS
 from fontplayground.engine.scripts import GROUP_IDS, group_of
 from fontplayground.engine.spec import MaterialSpec, Plan
 from fontplayground.ui import smart
-from fontplayground.ui.smart import (GLYPH_WARN, default_family_name, default_output_path, default_style,
+from fontplayground.ui.smart import (GLYPH_WARN, default_face, default_family_name, default_output_path, default_style,
                                      estimate_glyphs, exceeds_glyph_budget, face_glyph_share, group_counts,
                                      resolve_rules, smart_supplier, strip_vendor, suggest_materials)
 from tests.fixtures import cps, fake_face
@@ -43,17 +43,26 @@ def test_group_counts_counts_every_group_per_face(segoe, yahei):
     assert counts[yahei.key]["hangul"] == 0
 
 
-def test_group_counts_are_cached_per_face_key_and_size(segoe):
-    smart._counts.cache_clear()
-    group_counts([segoe])
-    rescanned = replace(segoe, mtime=2.0)  # a rescan yields a new object for the same file
-    group_counts([rescanned])
-    assert smart._counts.cache_info().hits == 1
-    grown = replace(segoe, codepoints=frozenset(segoe.codepoints | HANGUL))
-    assert group_counts([grown])[grown.key]["hangul"] == 100  # a changed font misses the cache
-    assert smart._counts.cache_info().misses == 2
-    group_counts([segoe])[segoe.key]["latin"] = 0
-    assert group_counts([segoe])[segoe.key]["latin"] == 560  # callers get copies
+def test_group_counts_come_from_the_face_and_callers_get_copies(segoe):
+    counts = group_counts([segoe])[segoe.key]
+    assert counts == segoe.counts
+    counts["latin"] = 0
+    assert group_counts([segoe])[segoe.key]["latin"] == 560
+
+
+def test_default_face_matches_main_italic_then_weight():
+    regular = fake_face(cps("a"), path="f.ttc", index=0, family="F", style="Regular")
+    bold = fake_face(cps("a"), path="f.ttc", index=1, family="F", style="Bold", weight=700)
+    italic = replace(fake_face(cps("a"), path="f.ttc", index=2, family="F", style="Italic"), italic=True)
+    broken = fake_face(cps("a"), path="f.ttc", index=3, family="F", style="Black", weight=900, outline="none")
+    faces = [bold, italic, regular, broken]
+    assert default_face(faces, None) == regular                      # no main: upright, 400
+    assert default_face(faces, bold) == bold
+    assert default_face(faces, replace(bold, italic=True)) == italic
+    assert default_face([broken], None) == broken                    # nothing supported: still inspectable
+    assert default_face([], None) is None
+    black_main = fake_face(cps("a"), path="m.ttf", weight=900)
+    assert default_face(faces, black_main) == bold                    # the unsupported Black is skipped
 
 
 # ----- suppliers ---------------------------------------------------------------------------------

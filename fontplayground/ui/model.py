@@ -17,10 +17,12 @@ from PySide6.QtCore import QObject, QTimer, Signal
 from fontplayground.catalog.face import FontFace
 from fontplayground.engine.merge import MAX_GLYPHS
 from fontplayground.engine.planner import plan as plan_spec
-from fontplayground.engine.scripts import GROUP_IDS
+from fontplayground.engine.scripts import GROUP_IDS, group_of
 from fontplayground.engine.spec import ForgeSpec, MaterialSpec, Plan
-from fontplayground.ui import smart
-from fontplayground.ui.preview import DEFAULT_SAMPLE, font_loader
+from fontplayground.ui import languages, smart
+from fontplayground.ui.languages import DEFAULT_SAMPLE, OLD_DEFAULT_SAMPLE
+from fontplayground.ui.mix import Mix, MixFont
+from fontplayground.ui.preview import font_loader
 from fontplayground.ui.textutil import visible_chars
 from fontplayground.ui.workers import CombineWorker
 
@@ -72,6 +74,25 @@ def clean_stale_results() -> None:
             path.unlink()
         except OSError:
             pass
+
+
+def _language_groups(language_id: str | None) -> tuple[str, ...]:
+    """The script groups a font added for this language is pinned to (none for None or an unknown id)."""
+    try:
+        return languages.language(language_id).groups if language_id else ()
+    except KeyError:
+        return ()
+
+
+def _plan_tallies(plan: Plan, count: int) -> list[dict[str, int]]:
+    tallies: list[dict[str, int]] = []
+    for i in range(count):
+        tally: dict[str, int] = {}
+        for cp in plan.assignments.get(i, ()):
+            g = group_of(cp)
+            tally[g] = tally.get(g, 0) + 1
+        tallies.append(tally)
+    return tallies
 
 
 @dataclass
@@ -177,6 +198,9 @@ class ForgeModel(QObject):
         self._sample_text = DEFAULT_SAMPLE
         self._catalog: dict[FaceKey, FontFace] = {}
         self._plan: Plan | None = None
+        self._tallies: list[dict[str, int]] | None = None     # per font: characters per group in the plan
+        self._inputs_serial = 0                                # bumps when what gets drawn changes (not names)
+        self._plan_inputs = -1                                 # _inputs_serial the plan was computed for
         self._glyph_estimate = 0                               # from the current plan; 0 without one
         self._plan_timer = QTimer(self)
         self._plan_timer.setSingleShot(True)
@@ -276,11 +300,36 @@ class ForgeModel(QObject):
         return self._busy
 
     # ----- materials -----
-    def add(self, face: FontFace) -> bool:
-        """Append a material (priority = order added). False when it is already in the tray."""
+    def add(self, face: FontFace, language: str | None = None) -> bool:
+        """Append a material (priority = order added). False when it is already in the tray.
+
+        Added for a language (a languages id), the language's script groups are pinned to it: the user chose it
+        for that language, so it draws it even when a font above could.
+        """
         if self.has(face.key):
             return False
         self._rows.append(MaterialRow(face))
+        for group_id in _language_groups(language):
+            self._pins[group_id] = face.key
+        self._materials_edited()
+        return True
+
+    def replace(self, old_key: FaceKey, face: FontFace, keep_adjust: bool = False) -> bool:
+        """Put `face` where `old_key` is: pins and a pinned base follow it; boldness and size are reset unless kept
+        (another style of the same family keeps them). False when old_key is not a row, `face` is already another
+        row, or nothing would change."""
+        i = self.index_of(old_key)
+        if i is None or (face.key != old_key and self.has(face.key)):
+            return False
+        row = self._rows[i]
+        new = MaterialRow(face, row.weight, row.scale) if keep_adjust else MaterialRow(face)
+        if new == row:
+            return False
+        self._rows[i] = new
+        if face.key != old_key:
+            self._pins = {g: (face.key if k == old_key else k) for g, k in self._pins.items()}
+            if self._base_key == old_key:
+                self._base_key = face.key
         self._materials_edited()
         return True
 
@@ -405,6 +454,8 @@ class ForgeModel(QObject):
         auto = self._auto_names()
         self._family, self._style, self._output = auto["family"], auto["style"], auto["output"]
         self._plan = None
+        self._tallies = None
+        self._inputs_serial += 1
         self._glyph_estimate = 0
         self._serial += 1  # a combine still finishing belongs to the old state
         self.materialsChanged.emit()
@@ -437,6 +488,17 @@ class ForgeModel(QObject):
         covered: set[int] = set().union(*(r.face.codepoints for r in self._rows)) if self._rows else set()
         return [c for c in visible_chars(self._sample_text) if ord(c) not in covered]
 
+    def suggestions_for(self, language_id: str, limit: int = 3) -> list[FontFace]:
+        """suggestions() among the catalog faces that draw the language well (every face for an unknown id)."""
+        try:
+            lang = languages.language(language_id)
+        except KeyError:
+            lang = None
+        faces = [f for f in self._catalog.values() if lang is None or languages.covers_well(f, lang)]
+        missing = {ord(c) for c in self.missing_sample_chars()}
+        return smart.suggest_materials(missing, faces, self.main, limit=limit, exclude_keys=self.keys(),
+                                       main_glyphs=self._glyphs_needed())
+
     def suggestions(self, limit: int = 3) -> list[FontFace]:
         """Catalog faces worth adding for the missing sample characters.
 
@@ -457,6 +519,45 @@ class ForgeModel(QObject):
                 if i > 0:
                     total += smart.face_glyph_share(row.face, len(self._plan.assignments.get(i, ())))
         return total
+
+    # ----- what the preview draws -----
+    def mix(self) -> Mix:
+        """The current recipe as the preview draws it."""
+        return self._mix_of(self._rows, self._pins, self._base_key)
+
+    def mix_with(self, face: FontFace, replace: FaceKey | None = None, language: str | None = None) -> Mix:
+        """The recipe as if `face` had been added (for `language`) or had replaced `replace`. Nothing changes.
+
+        When the model would refuse the change (the face is already another row), the current mix is returned.
+        """
+        rows, pins, base = list(self._rows), dict(self._pins), self._base_key
+        i = self.index_of(replace) if replace is not None else None
+        if i is not None:
+            if face.key != replace and self.has(face.key):
+                return self.mix()
+            rows[i] = MaterialRow(face)
+            pins = {g: (face.key if k == replace else k) for g, k in pins.items()}
+            if base == replace:
+                base = face.key
+        elif not self.has(face.key):
+            rows.append(MaterialRow(face))
+            for group_id in _language_groups(language):
+                pins[group_id] = face.key
+        return self._mix_of(rows, pins, base)
+
+    def _mix_of(self, rows: list[MaterialRow], pins: dict[str, FaceKey | None], base_key: FaceKey | None) -> Mix:
+        keys = [r.face.key for r in rows]
+        rules = smart.resolve_rules(keys, pins, smart.group_counts(r.face for r in rows))
+        fonts = tuple(MixFont(r.face, r.weight if r.weight is not None else self._default_weight,
+                              r.scale if r.scale is not None else self._default_scale) for r in rows)
+        return Mix(fonts, rules, keys.index(base_key) if base_key in keys else 0)
+
+    def tallies(self) -> list[dict[str, int]] | None:
+        """Per font (row order): characters per script group it draws in the plan. None until the plan has caught
+        up with the last change to the fonts, their order, rules or adjustments."""
+        if self._plan is None or self._plan_inputs != self._inputs_serial or self._tallies is None:
+            return None
+        return [dict(t) for t in self._tallies]
 
     # ----- spec, validity, plan -----
     def script_rules(self) -> dict[str, int | None]:
@@ -498,6 +599,8 @@ class ForgeModel(QObject):
         """
         self._plan_timer.stop()
         self._plan = plan_spec(self.build_spec()) if self._rows else None
+        self._plan_inputs = self._inputs_serial
+        self._tallies = _plan_tallies(self._plan, len(self._rows)) if self._plan is not None else None
         self._glyph_estimate = smart.estimate_glyphs(self._rows, self._plan) if self._plan is not None else 0
         self._revalidate()
         self.planChanged.emit(self._plan)
@@ -609,7 +712,7 @@ class ForgeModel(QObject):
                 self._output = str(smart.default_output_path(self._family, self._style))
         sample = d.get("sample_text")
         if isinstance(sample, str) and sample:
-            self._sample_text = sample
+            self._sample_text = DEFAULT_SAMPLE if sample == OLD_DEFAULT_SAMPLE else sample
         self.materialsChanged.emit()
         self.namesChanged.emit()
         self.sampleChanged.emit(self._sample_text)
@@ -629,6 +732,7 @@ class ForgeModel(QObject):
 
     def _after_change(self) -> None:
         self._serial += 1
+        self._inputs_serial += 1
         self._revalidate()
         self._plan_timer.start()
         self._mark_stale()
