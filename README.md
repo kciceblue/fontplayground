@@ -19,17 +19,19 @@ On macOS/Linux use `.venv/bin/pip`.
 .venv\Scripts\python -m fontplayground
 ```
 
-## The three steps
+## How it works
 
-The window is one path: **1 Pick fonts → 2 Check → 3 Forge & save**. The materials tray at the bottom always shows what you have picked, tells you what your sample text still lacks, and offers one-click suggestions. The button at the bottom right always says what happens next.
+Everything happens in one window. On the left is **Your font**: the fonts it is made of, top to bottom. On the right is a preview of your own text drawn exactly the way the result will draw it; click it and type. At the bottom are the name, **Save a copy…** and **Install**.
 
-**1 Pick fonts.** Search the fonts installed on your computer (scanned once, then cached). Each family shows badges for the scripts it covers, so a font with Han or Kana is easy to spot. Click a family to preview it with your own sample text in any language; characters the font lacks are shown in red. The line under the preview tells you what this font would add to your mix. Press **Add to materials**. The first font you add is the **Main** font: it sets the line spacing and keeps every script it covers reasonably well (at least a tenth of what the fullest font offers), so ordinary text keeps its look; the other fonts fill in the rest. You can change any of that on the Check step.
+**Main font.** Press **Choose main font…** and pick the font you like for letters and numbers; it also sets the line spacing. The picker draws every font in its own face, with its native name (微软雅黑, 等线, 맑은 고딕) and a sample line of the language you are choosing for, and only lists fonts that draw that language well. Search by English or native name; ↑ and ↓ try the next font in the preview, Enter uses it, Esc goes back.
 
-**2 Check.** One card per font shows what it will supply. On the right, "How the result will look" draws every character of your sample in the font that will actually supply it, before any file exists. "Who supplies what" lists only the scripts your fonts cover, with the automatic choice explained; change it if you disagree. Open **Adjust** on a card to make a font bolder (variable fonts are instanced, static fonts get a synthetic bold) or scale it so it sits well next to the main font.
+**Other languages.** When your text has characters the main font cannot draw, the app offers the next step, e.g. **Choose a font for Chinese…**. **＋ Add a font for another language…** adds one for Japanese, Korean, Arabic, Hindi and more; a font added for a language draws that language even when a font above it could. Each card says in plain words what its font draws. Below the main font, **Size** and **Weight** make a font sit well next to the others, and the preview shows it at once; **Colour by font** paints every character in the colour of the font that draws it. Characters no font draws are listed under the preview with a button that finds a font for them.
 
-**3 Forge & save.** The family name, style and output path are prefilled. The forge starts as soon as you arrive, and the result is previewed in the real forged font with a plain summary and a list of sample characters nobody covers. Press **Save to …** to write the file, or **Install for me** to install it for your Windows user account (no admin rights). Any later change marks the result stale and the button reads **Rebuild**.
+**Install.** Press **Install**: the font is built (about 15 seconds for a Latin font plus a CJK font) and installed for your Windows user account, no admin rights needed; the preview then shows the real built font. Change anything and the button reads **Update installed font**. **Save a copy…** writes the `.ttf` wherever you like. The app will not install over a font Windows or you already have under the same name, and asks before replacing one it made earlier.
 
-Menu (⋯ at the top right): Rescan fonts, Add folder… (for fonts that are not installed), Start over, Theme (System, Light or Dark — System follows the Windows "Choose your mode" setting and is the default), and Open settings folder.
+**Advanced…** shows which font draws each script (and lets you change it), which font sets the line spacing, default boldness and size, and the report of the last build.
+
+Menu (⋯ at the top right of the preview): Rescan fonts, Add folder… (for fonts that are not installed), Start over, Advanced…, Theme (System, Light or Dark — System follows the Windows "Choose your mode" setting and is the default), and Open settings folder. The first start after an update may rescan your fonts once.
 
 ## What the result contains
 
