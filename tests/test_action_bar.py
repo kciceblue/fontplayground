@@ -17,8 +17,8 @@ from fontplayground.ui.build import BuildController, BuildState
 from fontplayground.ui.model import EMPTY_ERROR, GLYPH_NEAR_TEXT
 from fontplayground.ui.theme import DARK, LIGHT
 from tests.fixtures import cps, fake_face
-from tests.test_build import (FULL, FakeInstaller, close_model, copying_forge, make_model, wait_state,
-                              waiting_forge)
+from tests.fakes import FakeInstaller, copying_forge, waiting_forge
+from tests.test_build import FULL, close_model, make_model, wait_state
 
 IDLE_TEXT = "Installs for your account only — no admin rights needed."
 INSTALLED_TEXT = f"✓ Installed as “{FULL}” for your account."
