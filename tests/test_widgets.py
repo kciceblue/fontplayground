@@ -19,7 +19,8 @@ def test_elided_label_elides_to_its_room_and_explains_in_the_tooltip(qtbot):
     label.resize(label.sizeHint().width() + 10, 20)
     assert label.elided_text() == full and label.toolTip() == ""
     label.resize(60, 20)
-    assert label.elided_text().endswith("…") and label.toolTip() == full
+    # Qt ends the cut with "…", or "..." when the label's font has no ellipsis glyph
+    assert label.elided_text().endswith(("…", "...")) and label.elided_text() != full and label.toolTip() == full
     label.set_text("short", full_text="a much longer text")
     label.resize(400, 20)
     assert label.elided_text() == "short" and label.toolTip() == "a much longer text"

@@ -615,7 +615,7 @@ class ForgeModel(QObject):
         RESULT_DIR.mkdir(parents=True, exist_ok=True)
         out = RESULT_DIR / f"forged-{uuid4().hex[:8]}.ttf"
         self._serial_at_start = self._serial
-        self.worker = CombineWorker(self.build_spec(), str(out))
+        self.worker = CombineWorker(self.build_spec(), str(out), parent=self)   # owned by Qt, released when done
         self.worker.progress.connect(self._on_progress)
         self.worker.succeeded.connect(self._on_succeeded)
         self.worker.failed.connect(self._on_failed)
@@ -812,7 +812,26 @@ class ForgeModel(QObject):
     def _on_progress(self, stage: str, fraction: float) -> None:
         self.progress.emit(stage_text(stage), fraction)
 
+    def _release_worker(self) -> None:
+        """The run has ended: let go of its thread now.
+
+        Left in self.worker, the thread and this model hold each other through their connections; the cyclic garbage
+        collector then frees them at a random moment — possibly inside the next build's thread — and deleting a
+        QObject there crashes the process.
+        """
+        worker, self.worker = self.worker, None
+        if worker is None:
+            return
+        for signal in (worker.progress, worker.succeeded, worker.failed, worker.cancelled):
+            try:
+                signal.disconnect()
+            except (RuntimeError, TypeError):
+                pass
+        worker.wait()          # run() is returning: the signal being handled was its last act
+        worker.deleteLater()
+
     def _on_succeeded(self, report) -> None:
+        self._release_worker()
         self.result_path = report.output_path
         self.result_report = report
         self._stale = False
@@ -822,6 +841,7 @@ class ForgeModel(QObject):
             self._mark_stale()
 
     def _on_failed(self, message: str) -> None:
+        self._release_worker()
         self._set_busy(False)
         self.resultFailed.emit(message)
 
@@ -831,5 +851,6 @@ class ForgeModel(QObject):
                 Path(self.worker.output_path).unlink()
             except OSError:
                 pass
+        self._release_worker()
         self._set_busy(False)
         self.resultCancelled.emit()
