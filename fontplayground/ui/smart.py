@@ -7,12 +7,11 @@ from __future__ import annotations
 
 import re
 from collections.abc import Iterable, Mapping, Sequence
-from functools import lru_cache
 from pathlib import Path
 
 from fontplayground.catalog.face import FontFace
 from fontplayground.engine.merge import MAX_GLYPHS
-from fontplayground.engine.scripts import GROUP_IDS, group_of
+from fontplayground.engine.scripts import GROUP_IDS
 from fontplayground.engine.spec import Plan
 
 FaceKey = tuple[str, int]
@@ -29,41 +28,29 @@ _UNSAFE_FILENAME = re.compile(r'[<>:"/\\|?*\x00-\x1f]+')
 
 
 # ----- group counts ----------------------------------------------------------------------------
-class _CountsKey:
-    """Cache key for one face's counts: hash/equality by (path, index, character count).
-
-    A rescan yields a new FontFace object for the same file; keying on the face key plus the size of
-    its character map lets lru_cache reuse the counts unless the font itself changed.
-    """
-    __slots__ = ("face", "_key")
-
-    def __init__(self, face: FontFace) -> None:
-        self.face = face
-        self._key = (face.path, face.index, len(face.codepoints))
-
-    def __hash__(self) -> int:
-        return hash(self._key)
-
-    def __eq__(self, other: object) -> bool:
-        return isinstance(other, _CountsKey) and self._key == other._key
-
-
-@lru_cache(maxsize=512)
-def _counts(ref: _CountsKey) -> dict[str, int]:
-    counts = dict.fromkeys(GROUP_IDS, 0)
-    for cp in ref.face.codepoints:
-        counts[group_of(cp)] += 1
-    return counts
-
-
 def face_group_counts(face: FontFace) -> dict[str, int]:
-    """Characters per script group for one face: {group id: count}, every group present (0 when empty)."""
-    return dict(_counts(_CountsKey(face)))
+    """Characters per script group for one face: {group id: count}, every group present (0 when empty). A copy."""
+    return dict(face.counts)
 
 
 def group_counts(faces: Iterable[FontFace]) -> dict[FaceKey, dict[str, int]]:
     """counts[key][group] = |codepoints(face) ∩ group| for every face."""
     return {face.key: face_group_counts(face) for face in faces}
+
+
+def default_face(faces: Sequence[FontFace], main: FontFace | None) -> FontFace | None:
+    """The face of a family to use first: supported, italic like Main, weight closest to Main's (400 without Main).
+
+    Ties keep the given order. A family with no supported face yields its first face (so it can still be inspected).
+    """
+    if not faces:
+        return None
+    want_italic = main.italic if main is not None else False
+    want_weight = main.weight_class if main is not None else DEFAULT_WEIGHT_CLASS
+    candidates = [f for f in faces if f.supported] or list(faces)
+    ranked = min(enumerate(candidates),
+                 key=lambda p: (p[1].italic != want_italic, abs(p[1].weight_class - want_weight), p[0]))
+    return ranked[1]
 
 
 # ----- suppliers -------------------------------------------------------------------------------

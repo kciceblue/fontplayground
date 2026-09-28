@@ -13,7 +13,8 @@ from fontplayground.ui import model as model_module
 from fontplayground.ui import workers
 from fontplayground.ui.model import (EMPTY_ERROR, GLYPH_NEAR_TEXT, ForgeModel, MaterialRow, clean_stale_results,
                                      glyph_limit_text, stage_text)
-from fontplayground.ui.preview import DEFAULT_SAMPLE
+from fontplayground.ui.languages import DEFAULT_SAMPLE, OLD_DEFAULT_SAMPLE
+from fontplayground.ui.mix import Mix, MixFont
 from tests.fixtures import cps, fake_face
 
 
@@ -663,3 +664,112 @@ def test_clean_stale_results_removes_only_forged_files(tmp_path, monkeypatch):
     other.write_bytes(b"y")
     clean_stale_results()
     assert not stale.exists() and other.exists()
+
+
+# ----- the mixer's additions ----------------------------------------------------------------------
+KANA = cps("あいうえおかきくけこ")
+
+
+def test_add_for_a_language_pins_its_groups(model, faces):
+    a, b, c = faces
+    kana_font = fake_face(KANA | cps("ab"), path="kana.ttf", family="Kana")
+    model.add(a)
+    model.add(b, "chinese_s")
+    assert model.pins["han"] == b.key and all(k is None for g, k in model.pins.items() if g != "han")
+    model.add(kana_font, "japanese")
+    assert model.pins["kana"] == kana_font.key and model.script_rules()["kana"] == 2
+    model.add(c, None)
+    assert model.pins["latin"] is None
+    model.add(fake_face(cps("x"), path="x.ttf"), "no such language")   # unknown: added, nothing pinned
+    assert len(model.rows) == 5
+
+
+def test_replace_keeps_the_position_and_moves_pins_and_base(qtbot, model, faces):
+    a, b, c = faces
+    for f in faces:
+        model.add(f)
+    model.set_pin("han", b.key)
+    model.set_base(b.key)
+    model.set_adjust(b.key, 700, 1.1)
+    new = fake_face(cps("ab漢"), path="new.ttf", family="New")
+    with qtbot.waitSignal(model.materialsChanged):
+        assert model.replace(b.key, new)
+    assert model.keys() == [a.key, new.key, c.key]
+    assert model.pins["han"] == new.key and model.base_key == new.key
+    assert (model.rows[1].weight, model.rows[1].scale) == (None, None)       # adjustments were for the old font
+    assert not model.replace(new.key, a)                                     # a is already another row
+    assert not model.replace(("nope", 0), a)
+    bold = replace(new, style="Bold", index=1)
+    model.set_adjust(new.key, 600, 0.9)
+    assert model.replace(new.key, bold, keep_adjust=True)                    # another style of the same family
+    assert (model.rows[1].face, model.rows[1].weight, model.rows[1].scale) == (bold, 600, 0.9)
+
+
+def test_mix_resolves_adjustments_against_the_defaults(model, faces):
+    a, b, c = faces
+    model.add(a)
+    model.add(b)
+    model.set_adjust(b.key, None, 0.8)
+    model.set_defaults(500, 1.2)
+    mix = model.mix()
+    assert mix.fonts == (MixFont(a, 500, 1.2), MixFont(b, 500, 0.8))
+    assert mix.rules == model.script_rules() and mix.base_index == 0
+    assert mix.source_of(ord("漢")) == 1 and mix.source_of(ord("c")) == 0
+    model.reset()
+    assert model.mix().fonts == ()
+
+
+def test_mix_with_tries_a_face_without_changing_anything(qtbot, model, faces):
+    a, b, c = faces
+    model.add(a)
+    model.add(c)
+    hangul = fake_face(cps("한글ab"), path="hangul.ttf", family="Hangul")
+    signals = []
+    for sig in (model.materialsChanged, model.namesChanged, model.validityChanged):
+        sig.connect(lambda *_: signals.append(1))
+    added = model.mix_with(hangul, language="korean")
+    assert added.keys() == [a.key, c.key, hangul.key] and added.rules["hangul"] == 2
+    swapped = model.mix_with(hangul, replace=c.key)
+    assert swapped.keys() == [a.key, hangul.key]
+    assert model.mix_with(a, replace=c.key) == model.mix()                   # would be refused: nothing changes
+    assert model.mix_with(a).keys() == [a.key, c.key]                        # already there
+    assert model.keys() == [a.key, c.key] and model.pins["hangul"] is None and signals == []
+
+
+def test_tallies_follow_the_plan_and_are_none_while_it_is_stale(model, faces):
+    a, b, c = faces
+    assert model.tallies() is None
+    model.add(a)
+    model.add(b)
+    assert model.tallies() is None                                           # not planned yet
+    model.recompute_plan_now()
+    tallies = model.tallies()
+    assert tallies == [{"latin": 5}, {"han": 1, "cjk_symbols": 1}]
+    model.set_family("Renamed")                                              # names do not change what is drawn
+    assert model.tallies() == tallies
+    model.set_adjust(b.key, 700, None)
+    assert model.tallies() is None
+    model.recompute_plan_now()
+    assert model.tallies() == tallies
+
+
+def test_suggestions_for_a_language_only_offer_fonts_that_draw_it_well(model, faces):
+    a, b, c = faces
+    han = set(range(0x4E00, 0x4E00 + 3000))
+    good = fake_face(han | cps("们这说国门来"), path="good.ttf", family="Good")
+    poor = fake_face(set(range(0x4E00, 0x4E00 + 3000 + 10)), path="poor.ttf", family="Poor")   # no markers
+    model.set_catalog({f.key: f for f in (a, b, c, good, poor)})
+    model.add(a)
+    model.set_sample_text("abc 一丁")
+    assert [f.family for f in model.suggestions_for("chinese_s")] == ["Good"]
+    assert {f.family for f in model.suggestions_for("any")} == {"Good", "Poor"}
+    assert model.suggestions_for("latin") == []                              # nothing missing that Latin fonts draw
+
+
+def test_restoring_the_old_default_sample_gives_the_new_one(model, faces):
+    a, b, c = faces
+    d = {"materials": [{"path": a.path, "index": 0}], "sample_text": OLD_DEFAULT_SAMPLE}
+    model.from_settings(d, {a.key: a})
+    assert model.sample_text == DEFAULT_SAMPLE
+    model.from_settings({**d, "sample_text": "mine"}, {a.key: a})
+    assert model.sample_text == "mine"
