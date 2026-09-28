@@ -1,3 +1,4 @@
+import gc
 import os
 from pathlib import Path
 
@@ -6,6 +7,15 @@ import pytest
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from tests.fixtures import build_collection, build_font, cps  # noqa: E402
+
+
+@pytest.fixture(autouse=True)
+def _collect_cycles():
+    """Free the reference cycles a test leaves (parentless models and controllers hold each other through their
+    connections) right after it, in the main thread. Left to the cyclic collector they are freed at a random moment
+    — possibly inside a later test's build thread — and deleting a QObject there crashes the process."""
+    yield
+    gc.collect()
 
 
 @pytest.fixture(autouse=True)
