@@ -6,29 +6,17 @@ from PySide6.QtGui import QPalette
 from PySide6.QtWidgets import QLabel
 
 import fontplayground.ui.theme as theme_module
-import importlib
 from fontplayground.ui.theme import (DARK, LIGHT, PREFERENCES, Theme, ThemeManager, contrast_ratio, placeholder_html,
                                      retint, tint)
 
 THEMES = [LIGHT, DARK]
-# Every stylesheet template of the UI modules; a module that does not exist yet (the mixer is being built) is skipped.
-TEMPLATE_MODULES = ("app", "preview", "preview_pane", "picker", "recipe", "advanced", "action_bar")
+from fontplayground.ui import action_bar, advanced, app, picker, preview, preview_pane, recipe  # noqa: E402
 
-
-def _templates() -> dict[str, str]:
-    found = {}
-    for name in TEMPLATE_MODULES:
-        try:
-            module = importlib.import_module(f"fontplayground.ui.{name}")
-        except ImportError:
-            continue
-        for attr in ("STYLE", "APP_STYLE"):
-            if isinstance(getattr(module, attr, None), str):
-                found[f"{name}.{attr}"] = getattr(module, attr)
-    return found
-
-
-TEMPLATES = _templates()
+TEMPLATES = {
+    "app.APP_STYLE": app.APP_STYLE, "preview.STYLE": preview.STYLE, "preview_pane.STYLE": preview_pane.STYLE,
+    "picker.STYLE": picker.STYLE, "recipe.STYLE": recipe.STYLE, "advanced.STYLE": advanced.STYLE,
+    "action_bar.STYLE": action_bar.STYLE,
+}
 HEX = re.compile(r"#(?:[0-9a-fA-F]{6}|[0-9a-fA-F]{3})\b")   # objectName selectors like #card never match
 NAMED = re.compile(r"\b(white|black|gray|grey|red|green|blue)\b")
 # (foreground, background, minimum WCAG ratio) — spec section 3
