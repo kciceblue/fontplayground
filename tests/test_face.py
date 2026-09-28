@@ -1,5 +1,10 @@
+import pytest
+
 from fontplayground.catalog.face import read_faces
-from tests.fixtures import fake_face
+from tests.fixtures import build_font, cps, fake_face
+
+JA = "テスト明朝"
+SJIS_AS_MAC_ROMAN = (1, 0, 0, JA.encode("shift_jis"))  # how EPSON's Japanese fonts store it; decodes as mojibake
 
 
 def test_read_glyf_face(font_dir):
@@ -35,3 +40,22 @@ def test_unsupported_reasons():
     assert fake_face({97}, outline="CFF2").unsupported_reason == "CFF2 outlines are not supported"
     assert fake_face({97}, has_color=True).unsupported_reason == "colour fonts are not supported"
     assert fake_face({97}).unsupported_reason is None
+
+
+@pytest.mark.parametrize("records, family", [
+    ([(1, 1, 11, JA)], JA),                                   # only a Mac Japanese record: decoded as Shift-JIS
+    ([SJIS_AS_MAC_ROMAN, (1, 1, 11, JA)], JA),                # ...and preferred to a Mac Roman one
+    ([SJIS_AS_MAC_ROMAN, (3, 1, 0x411, JA)], JA),             # a Windows record of any language beats Mac ones
+    ([(1, 1, 11, JA), (3, 1, 0x411, JA), (3, 1, 0x409, "Test Mincho")], "Test Mincho"),  # Windows English first
+    ([(1, 0, 0, "Old Mac")], "Old Mac"),                      # nothing better: Mac Roman is still read
+    ([], "Stem"),                                             # no family record: the file name
+])
+def test_family_comes_from_a_correctly_decoded_record(tmp_path, records, family):
+    path = build_font(tmp_path / "Stem.ttf", "Unused", "Regular", cps("ab"), name_records={1: records})
+    assert read_faces(path)[0].family == family
+
+
+def test_style_comes_from_a_correctly_decoded_record(tmp_path):
+    records = [(1, 0, 0, "標準".encode("shift_jis")), (3, 1, 0x411, "標準")]
+    path = build_font(tmp_path / "S.ttf", "Fixture S", "Unused", cps("ab"), name_records={2: records})
+    assert read_faces(path)[0].style == "標準"

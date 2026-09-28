@@ -8,6 +8,7 @@ from fontTools.pens.t2CharStringPen import T2CharStringPen
 from fontTools.pens.ttGlyphPen import TTGlyphPen
 from fontTools.ttLib import TTCollection, TTFont, newTable
 from fontTools.ttLib.tables._k_e_r_n import KernTable_format_0
+from fontTools.ttLib.tables._n_a_m_e import makeName
 from fontTools.ttLib.tables.TupleVariation import TupleVariation
 
 from fontplayground.catalog.face import FontFace
@@ -28,11 +29,13 @@ def _rect(pen, x0, y0, x1, y1):
 
 
 def build_font(path, family, style, codepoints, *, upem=1000, cff=False, weight=400, fs_type=0, variable=False,
-               os2_version=None, composites=None, kern=None) -> Path:
+               os2_version=None, composites=None, kern=None, name_records=None) -> Path:
     """Every glyph is a rectangle from x=LSB to LSB+STEM, y=0..HEIGHT, advance STEM+2*LSB (scaled by upem/1000).
 
     composites: {codepoint: base_codepoint} adds TrueType composite glyphs (after the simple ones in glyph order).
     kern: {(left_cp, right_cp): value} adds a legacy format-0 'kern' table.
+    name_records: {name_id: [(platform_id, encoding_id, language_id, text)]} replaces every record of those name IDs;
+        text given as bytes is stored as is, e.g. Shift-JIS in a record labelled Mac Roman.
     """
     k = upem / 1000
     stem, height, lsb = round(STEM * k), round(HEIGHT * k), round(LSB * k)
@@ -64,6 +67,11 @@ def build_font(path, family, style, codepoints, *, upem=1000, cff=False, weight=
     fb.setupHorizontalMetrics({n: (advance, lsb) for n in order})
     fb.setupHorizontalHeader(ascent=round(800 * k), descent=-round(200 * k))
     fb.setupNameTable({"familyName": family, "styleName": style})
+    if name_records:
+        name = fb.font["name"]
+        name.names = [r for r in name.names if r.nameID not in name_records]
+        name.names += [makeName(text, name_id, *where) for name_id, records in name_records.items()
+                       for *where, text in records]
     os2 = dict(sTypoAscender=round(800 * k), sTypoDescender=-round(200 * k), usWinAscent=round(800 * k),
                usWinDescent=round(200 * k), usWeightClass=weight, fsType=fs_type)
     if os2_version is not None:
