@@ -269,6 +269,18 @@ def test_save_a_copy_asks_for_a_path(qtbot, bar, model, controller, installer, f
     assert bar.primary_button.text() == "Install" and bar.primary_button.isEnabled()
 
 
+def test_a_change_after_saving_no_longer_says_saved(qtbot, bar, model, controller, forge_calls, monkeypatch,
+                                                     tmp_path):
+    out = tmp_path / "Mine.ttf"
+    monkeypatch.setattr(QFileDialog, "getSaveFileName", lambda *args, **kw: (str(out), ""))
+    bar.save_button.click()
+    wait_state(qtbot, controller, BuildState.SAVED)
+    assert bar.status_label.text() == f"✓ Saved to {short_path(str(out))}"
+    model.set_style("Bold")                                    # the saved copy is out of date now
+    assert bar.status_label.text() == IDLE_TEXT and bar.status_label.property("tone") == "muted"
+    assert links(bar) == []
+
+
 def test_short_path_uses_a_tilde_for_the_home_folder():
     home = Path.home()
     assert short_path(str(home / "Documents" / "X.ttf")) == f"~{os.sep}Documents{os.sep}X.ttf"
