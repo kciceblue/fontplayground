@@ -184,6 +184,22 @@ def test_updating_under_a_new_name_removes_the_font_installed_before(qtbot, cont
     assert installer.uninstalls == [FULL] and controller.installed_name == "Test Mix Bold"
 
 
+def test_updating_under_a_new_name_reports_an_old_font_it_could_not_remove(qtbot, controller, model, installer,
+                                                                         forge_calls):
+    _install(qtbot, controller)
+    model.set_style("Bold")
+    installer.uninstall_error = OSError("access denied")
+    controller.install()
+    wait_state(qtbot, controller, BuildState.FAILED)
+    assert installer.installs[-1] == ("Test Mix-Bold.ttf", "Test Mix Bold", True) and installer.uninstalls == []
+    assert controller.error == "Installed “Test Mix Bold”, but couldn't remove “Test Mix Regular”: access denied"
+    assert controller.installed_name == FULL and controller.is_update()   # the old name stays on record
+    installer.uninstall_error = None
+    controller.install()                                       # Update tries again
+    assert controller.state is BuildState.INSTALLED and len(forge_calls) == 2
+    assert installer.uninstalls == [FULL] and controller.installed_name == "Test Mix Bold"
+
+
 def test_install_errors_fail_with_a_plain_message(qtbot, controller, model, installer, forge_calls, tmp_path):
     installer.install_error = OSError("the font folder is locked")
     controller.install()
