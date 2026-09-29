@@ -20,6 +20,7 @@ class FakeInstaller:
         self.forged: set[str] = set()                       # paths is_forged() says yes to
         self.uninstall_result = True
         self.install_error: Exception | None = None
+        self.uninstall_error: Exception | None = None
         self.lookup_error: Exception | None = None
 
     def is_supported(self) -> bool:
@@ -44,6 +45,8 @@ class FakeInstaller:
         return self.user_dir / path.name
 
     def uninstall_font_for_user(self, full_name: str) -> bool:
+        if self.uninstall_error is not None:
+            raise self.uninstall_error
         self.uninstalls.append(full_name)
         return self.uninstall_result
 

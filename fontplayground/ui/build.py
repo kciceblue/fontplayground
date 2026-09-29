@@ -32,6 +32,7 @@ BUILD_FAILED_TEXT = "Couldn't build the font: {error}"
 INSTALL_FAILED_TEXT = "Couldn't install the font: {error}"
 SAVE_FAILED_TEXT = "Couldn't save the font: {error}"
 REMOVE_FAILED_TEXT = "Couldn't remove the font: {error}"
+REPLACE_FAILED_TEXT = "Installed “{name}”, but couldn't remove “{previous}”: {error}"
 REMOVED_TEXT = "Removed from your fonts."
 NOT_INSTALLED_TEXT = "That font was no longer installed."
 WINDOWS_HAS_TEXT = "Windows already has a font called “{name}” — choose another name."
@@ -273,8 +274,9 @@ class BuildController(QObject):
         if previous is not None and previous.casefold() != full.casefold():
             try:   # "Update installed font" under a new name: the old one is replaced, not kept beside it
                 self.installer.uninstall_font_for_user(previous)
-            except Exception:
-                pass
+            except Exception as e:  # keep the old name on record: Update tries to replace it again
+                self._fail(REPLACE_FAILED_TEXT.format(name=full, previous=previous, error=e))
+                return
         self.installed_name = full
         self.installed_path = Path(dest) if dest is not None else None
         self._installed_result = m.result_path
