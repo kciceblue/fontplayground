@@ -92,6 +92,22 @@ def test_add_remove_move_and_set_order(qtbot, model, faces):
     assert model.row(b.key) is None and model.row(a.key).face is a
 
 
+def test_a_font_that_becomes_main_drops_its_size_and_weight(model, faces):
+    a, b, c = faces
+    for face in faces:
+        model.add(face)
+    model.set_adjust(b.key, 700, 1.1)
+    model.set_adjust(c.key, 600, 0.9)
+    assert model.move(b.key, 0) and model.rows[0] == MaterialRow(b)          # Make main font
+    assert model.row(c.key) == MaterialRow(c, 600, 0.9)                      # the others keep theirs
+    model.set_adjust(a.key, 500, 1.2)
+    assert model.move(c.key, 1) and model.row(c.key) == MaterialRow(c, 600, 0.9)   # not the main font: kept
+    assert model.set_order([c.key]) and model.rows[0] == MaterialRow(c)
+    model.set_adjust(b.key, 300, 0.8)
+    assert model.remove(c.key) and model.rows[0] == MaterialRow(b)           # the next font up becomes main
+    assert model.row(a.key) == MaterialRow(a, 500, 1.2)
+
+
 def test_remove_clears_base_and_pins_that_pointed_to_it(model, faces):
     a, b, c = faces
     model.add(a)

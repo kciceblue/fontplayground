@@ -337,10 +337,12 @@ class ForgeModel(QObject):
         i = self.index_of(key)
         if i is None:
             return False
+        main = self._rows[0].face.key
         del self._rows[i]
         if self._base_key == key:
             self._base_key = None
         self._pins = {g: (None if k == key else k) for g, k in self._pins.items()}
+        self._reset_new_main(main)
         self._materials_edited()
         return True
 
@@ -351,8 +353,10 @@ class ForgeModel(QObject):
         new_index = max(0, min(new_index, len(self._rows) - 1))
         if new_index == i:
             return False
+        main = self._rows[0].face.key
         row = self._rows.pop(i)
         self._rows.insert(new_index, row)
+        self._reset_new_main(main)
         self._materials_edited()
         return True
 
@@ -369,9 +373,17 @@ class ForgeModel(QObject):
         ordered += [r for r in self._rows if r.face.key not in seen]
         if [r.face.key for r in ordered] == self.keys():
             return False
+        main = self._rows[0].face.key
         self._rows = ordered
+        self._reset_new_main(main)
         self._materials_edited()
         return True
+
+    def _reset_new_main(self, previous: FaceKey) -> None:
+        """A font that has just become the main font drops its own Size and Weight: the main card has no controls
+        for them (the defaults in Advanced size it), so an adjustment kept from lower down would act unseen."""
+        if self._rows and self._rows[0].face.key != previous:
+            self._rows[0].weight = self._rows[0].scale = None
 
     def set_pin(self, group_id: str, key: FaceKey | None) -> bool:
         """Pin a script group to a material (None = let the app decide). Keys not in the tray count as None."""
