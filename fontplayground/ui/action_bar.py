@@ -256,7 +256,7 @@ class ActionBar(QWidget):
         if c.state is BuildState.INSTALLED:
             return _Status(INSTALLED_TEXT.format(name=c.installed_name), "ok", INSTALLED_DETAIL, show_file=True,
                            uninstall=True, notes=notes)
-        if c.state is BuildState.SAVED:
+        if c.state is BuildState.SAVED and not self.model.is_stale:   # a change since: the copy is out of date
             return _Status(SAVED_TEXT.format(path=short_path(str(c.saved_path))), "ok", show_file=True, notes=notes)
         if c.state is BuildState.FAILED:
             return _Status(c.error or "", "danger", notes=DETAILS_TEXT)
